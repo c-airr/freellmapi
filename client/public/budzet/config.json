@@ -1,0 +1,33 @@
+{
+  "_opis": "Ustawienia zakladek Budzet i Lancuchy. Wlasna wersje podmontuj na /app/client/dist/budzet/config.json (tylko do odczytu) — zmiana = odswiezenie strony, bez restartu.",
+  "_oficjalne": "Budzet: liczba jest OFICJALNA tylko dla dostawcow z tej listy i tylko dla wymienionych pol (rpd/rpm/tpm/tpd), bo tylko te publikuja je w dokumentacji. Reszta liczb z katalogu FreeLLMAPI jest pokazywana jako szacunek.",
+  "oficjalne": {
+    "groq": { "url": "https://console.groq.com/docs/rate-limits", "pola": ["rpm", "rpd", "tpm", "tpd"] },
+    "google": { "url": "https://ai.google.dev/gemini-api/docs/rate-limits", "pola": ["rpm", "rpd", "tpm"] },
+    "openrouter": { "url": "https://openrouter.ai/docs/api-reference/limits", "pola": ["rpm", "rpd"] }
+  },
+  "_podzial": "Kreator lancuchow: model jest DOBRY, gdy jego platforma/id zawiera ktoras z goodFamilies ORAZ intelligenceRank <= maxRank (mniejszy rank = madrzejszy). alwaysGood / alwaysBad wygrywaja z regula — wpisuj fragment 'platforma/model_id'.",
+  "maxRank": 93,
+  "goodFamilies": [
+    "gemini",
+    "gemma-4",
+    "deepseek",
+    "qwen",
+    "gpt-oss",
+    "llama-3.3-70b",
+    "llama-4",
+    "glm",
+    "kimi",
+    "minimax",
+    "mistral-small",
+    "mistral-medium",
+    "mistral-large",
+    "devstral",
+    "codestral",
+    "command-a",
+    "nemotron",
+    "grok"
+  ],
+  "alwaysGood": [],
+  "alwaysBad": []
+}
