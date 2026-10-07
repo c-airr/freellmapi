@@ -33,7 +33,8 @@ z `client/index.html` i wpina zakładki w menu.
 ## Wdrożenie
 
 Obraz buduje `.github/workflows/docker.yml` przy każdym pushu na `main`:
-`ghcr.io/c-airr/freellmapi:latest`. `docker-compose.yml` w tym repo już go używa.
+`ghcr.io/c-airr/freellmapi:main` (tag `latest` workflow nadaje tylko przy tagach wydań
+`v*`). `docker-compose.yml` w tym repo już go używa.
 
 ```bash
 docker compose pull && docker compose up -d

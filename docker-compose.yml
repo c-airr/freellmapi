@@ -3,7 +3,7 @@ services:
     # Fork c-airr: obraz budowany przez .github/workflows/docker.yml przy kazdym
     # pushu na main (zakladki Budzet/Lancuchy/Projekty/Endpointy + sledzenie
     # lancuchow). Oficjalny: ghcr.io/tashfeenahmed/freellmapi:latest.
-    image: ghcr.io/c-airr/freellmapi:latest
+    image: ghcr.io/c-airr/freellmapi:main
     build:
       context: .
       dockerfile: Dockerfile
