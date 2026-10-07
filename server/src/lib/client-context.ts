@@ -6,6 +6,16 @@ export interface ClientContext {
   ip: string | null;
   userAgent: string | null;
   agent: ClientAgent | null;
+  // The named fallback chain (profile) that routed this request — `auto:<name>`
+  // or the active chain behind plain `auto`. Set by resolveRoutingChain, read
+  // by logRequest so per-chain usage (projects) can be attributed. Not caller
+  // identity, so it is recorded even when client logging is opted out.
+  chain?: RoutingChainRef | null;
+}
+
+export interface RoutingChainRef {
+  profileId: number;
+  name: string;
 }
 
 // Request-scoped caller identity, readable from anywhere below the middleware
@@ -47,4 +57,11 @@ export function clientContextMiddleware(req: Request, _res: Response, next: Next
 
 export function getClientContext(): ClientContext {
   return storage.getStore() ?? { ip: null, userAgent: null, agent: null };
+}
+
+// Record which named chain is routing the current request. No-op outside an
+// HTTP request (no store), so background callers of the router are unaffected.
+export function setRoutingChain(chain: RoutingChainRef | null): void {
+  const store = storage.getStore();
+  if (store) store.chain = chain;
 }

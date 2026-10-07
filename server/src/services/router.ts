@@ -34,6 +34,7 @@ import { parseBudget } from '../lib/budget.js';
 import { platformDropsResponseFormat } from '../lib/sampling-params.js';
 import { isUnifyEnabled, getModelGroups, resolveRequestedIdForDispatch } from './model-groups.js';
 import { getActiveProfileId } from './profile-models.js';
+import { setRoutingChain } from '../lib/client-context.js';
 import { customEndpointKeyIds } from './custom-endpoint.js';
 import { isDegraded } from './degradation.js';
 import { modelStatsKey, endpointScopeForBaseUrl } from '../lib/endpoint-scope.js';
@@ -1207,8 +1208,9 @@ function getActiveChain(db: Db): ChainRow[] {
 }
 
 function getChainByProfileName(db: Db, name: string): ChainRow[] | null {
-  const profile = db.prepare("SELECT id FROM profiles WHERE LOWER(name) = ?").get(name.toLowerCase()) as { id: number } | undefined;
+  const profile = db.prepare("SELECT id, name FROM profiles WHERE LOWER(name) = ?").get(name.toLowerCase()) as { id: number; name: string } | undefined;
   if (!profile) return null;
+  setRoutingChain({ profileId: profile.id, name: profile.name });
 
   return db.prepare(`
     SELECT pm.model_db_id, pm.priority, pm.enabled,
@@ -1266,12 +1268,16 @@ function getChainByGlobalSort(db: Db, globalAxis: string): ChainRow[] {
  */
 function activeChainOrThrow(db: Db): ChainRow[] {
   const chain = getActiveChain(db);
+  const profileId = getActiveProfileId(db);
+  const profile = profileId == null
+    ? undefined
+    : db.prepare('SELECT name FROM profiles WHERE id = ?').get(profileId) as { name: string } | undefined;
+  // Plain `auto` is served by the active chain — attribute it like `auto:<name>`.
+  setRoutingChain(profileId != null && profile ? { profileId, name: profile.name } : null);
   if (chain.some(entry => entry.enabled)) return chain;
 
-  const profileId = getActiveProfileId(db);
   if (profileId == null) return chain;
 
-  const profile = db.prepare('SELECT name FROM profiles WHERE id = ?').get(profileId) as { name: string } | undefined;
   const err = new Error(
     `The active fallback chain${profile ? ` '${profile.name}'` : ''} has no enabled models. `
     + 'Enable models for it on the Models page, switch the active chain, or name another one with "auto:<chain>".',
@@ -1299,6 +1305,8 @@ export function resolveRoutingChain(modelString: string | undefined): ResolvedCh
 
   const globalAxis = GLOBAL_SORT_ALIASES[suffix];
   if (globalAxis) {
+    // A global sort spans the whole catalog, not a named chain.
+    setRoutingChain(null);
     const chain = getChainByGlobalSort(db, globalAxis);
     if (chain.length === 0) {
       const err = new Error(`No enabled models available for global sort '${suffix}'`) as any;

@@ -46,8 +46,17 @@ const loginSchema = z.object({
 // ── Brute-force throttle ──────────────────────────────────────────────────
 // Simple in-memory per-email limiter. A local single-user tool doesn't need a
 // distributed store; this just blunts online password guessing.
-const MAX_ATTEMPTS = 5;
+const DEFAULT_MAX_ATTEMPTS = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
+// LOGIN_MAX_ATTEMPTS overrides the threshold; 0 turns the lockout off for an
+// install reachable only from a private network, where locking the sole owner
+// out costs more than it protects. Read per call so tests can toggle it.
+function maxAttempts(): number {
+  const raw = process.env.LOGIN_MAX_ATTEMPTS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_ATTEMPTS;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_MAX_ATTEMPTS;
+}
 // Bound the map so a flood of distinct addresses cannot grow it without limit;
 // expired buckets are pruned opportunistically, mirroring the per-IP limiter in
 // middleware/rateLimit.ts.
@@ -78,7 +87,8 @@ function recordFailure(email: string): void {
   const key = throttleKey(email);
   const a = attempts.get(key) ?? { count: 0, lockedUntil: 0 };
   a.count++;
-  if (a.count >= MAX_ATTEMPTS) {
+  const limit = maxAttempts();
+  if (limit > 0 && a.count >= limit) {
     a.lockedUntil = Date.now() + LOCKOUT_MS;
     a.count = 0;
   }

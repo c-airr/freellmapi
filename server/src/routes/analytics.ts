@@ -25,7 +25,7 @@ const toSqliteDateTime = (timestamp: number) =>
     new Date(timestamp).toISOString().slice(0, 19).replace('T', ' ');
 
 // Return the rolling cutoff timestamp for the selected analytics range.
-function getSinceTimestamp(range: string): string {
+export function getSinceTimestamp(range: string): string {
   const now = Date.now();
 
   switch (range) {

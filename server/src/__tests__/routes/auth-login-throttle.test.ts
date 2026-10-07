@@ -91,4 +91,20 @@ describe('login brute-force throttling', () => {
     expect(attempt.status).toBe(401);
     expect(attempt.headers.get('x-ratelimit-limit')).toBeTruthy();
   });
+
+  // LOGIN_MAX_ATTEMPTS=0 turns the per-email lockout off for a private-network
+  // install; the default (unset) keeps the five-try lockout covered above.
+  it('never locks out when LOGIN_MAX_ATTEMPTS=0', async () => {
+    const email = 'nolock@example.com';
+    createUser(email, PASSWORD);
+    process.env.LOGIN_MAX_ATTEMPTS = '0';
+    try {
+      for (let i = 0; i < 8; i++) {
+        expect((await login(email, `wrong-${i}`)).status).toBe(401);
+      }
+      expect((await login(email, PASSWORD)).status).toBe(200);
+    } finally {
+      delete process.env.LOGIN_MAX_ATTEMPTS;
+    }
+  });
 });
