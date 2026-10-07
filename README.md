@@ -1,3 +1,5 @@
+> **Fork [c-airr/freellmapi](https://github.com/c-airr/freellmapi):** dodatkowe zakładki w panelu (Budżet, Łańcuchy, Projekty, Endpointy) i zapisywanie łańcucha przy każdym zapytaniu. Co się zmieniło i jak to wdrożyć: [FORK.md](FORK.md).
+
 <div align="center">
 
 # FreeLLMAPI

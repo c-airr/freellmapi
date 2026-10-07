@@ -1,6 +1,9 @@
 services:
   freellmapi:
-    image: ghcr.io/tashfeenahmed/freellmapi:latest
+    # Fork c-airr: obraz budowany przez .github/workflows/docker.yml przy kazdym
+    # pushu na main (zakladki Budzet/Lancuchy/Projekty/Endpointy + sledzenie
+    # lancuchow). Oficjalny: ghcr.io/tashfeenahmed/freellmapi:latest.
+    image: ghcr.io/c-airr/freellmapi:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -25,6 +28,8 @@ services:
       - "${HOST_BIND:-127.0.0.1}:${PORT:-3001}:3001"
     volumes:
       - freellmapi-data:/app/server/data
+      # Wlasne ustawienia zakladek Budzet/Lancuchy (wzor: client/public/budzet/config.json):
+      # - ./budzet-config.json:/app/client/dist/budzet/config.json:ro
     # Makes `host.docker.internal` resolve to the host from inside the
     # container. Docker Desktop provides it already; plain Docker on Linux does
     # not, and without it the documented way to reach a proxy running on the
