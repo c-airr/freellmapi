@@ -10,6 +10,12 @@
 // Funkcje api/fmt/esc/modeli/bladNazwy/mojeModele/limitOpis/kopiuj: wspolne.js.
 
 let app = null; // kontener strony, ustawia zkKreator()
+// Panel potrafi przerysowac strone tuz po wejsciu, wiec zkKreator bywa wolany
+// dwa razy. Starsze uruchomienie (i starsze wczytanie lancucha) po kazdym
+// await sprawdza, czy jest jeszcze aktualne — inaczej podpieloby drugi raz
+// te same zdarzenia i lista modeli by sie dublowala.
+let przebieg = 0;
+let wczytanie = 0;
 
 const stan = {
   cfg: null,
@@ -24,10 +30,18 @@ const stan = {
   kolejnosc: 'rank', // 'rank' | 'klik'
   apiKey: null, // klucz /v1 z /api/settings/api-key (null = nie udalo sie pobrac)
   pokazKlucz: false,
+  aktywny: null, // id lancucha, ktory obsluguje zwykle "auto"
+  wSkladzie: new Set(), // modele z listy, ktore edytowany lancuch juz ma (wlaczone i wylaczone)
 };
 
-function custom() {
-  return stan.profile.filter((p) => p.type === 'custom');
+/** Wbudowany lancuch (Default): serwer nie pozwala zmienic mu nazwy ani go usunac. */
+function wbudowany(p) {
+  return !!p && (p.type === 'default' || p.type === 'builtin');
+}
+
+/** Wszystkie lancuchy do edycji: wbudowane na gorze, potem wlasne. */
+function lancuchy() {
+  return stan.profile.slice().sort((a, b) => Number(wbudowany(b)) - Number(wbudowany(a)));
 }
 
 /** Adres proxy OpenAI-kompatybilnego — ten sam host, z ktorego otwarto panel. */
@@ -177,18 +191,31 @@ function ustawStatus(txt, blad = false) {
 }
 
 async function wczytajLancuch(id) {
+  const nr = ++wczytanie;
   stan.zaznaczone.clear();
   stan.licznik = 0;
   stan.zachowane = [];
-  stan.edytowany = id ? custom().find((p) => p.id === id) ?? null : null;
-  document.getElementById('nazwa').value = stan.edytowany?.name ?? '';
-  document.getElementById('usun').hidden = !stan.edytowany;
+  stan.wSkladzie = new Set();
+  stan.edytowany = id ? stan.profile.find((p) => p.id === id) ?? null : null;
+  const pole = document.getElementById('nazwa');
+  pole.value = stan.edytowany?.name ?? '';
+  pole.disabled = wbudowany(stan.edytowany);
+  document.getElementById('nazwa-uwaga').textContent = wbudowany(stan.edytowany)
+    ? 'Wbudowanemu łańcuchowi nie da się zmienić nazwy ani go usunąć. Skład i kolejność zmieniasz normalnie.'
+    : '';
+  document.getElementById('usun').hidden = !stan.edytowany || wbudowany(stan.edytowany);
   if (stan.edytowany) {
     const sklad = await api(`/api/profiles/${stan.edytowany.id}/models`);
+    if (nr !== wczytanie) return; // w miedzyczasie wybrano inny lancuch
     const znane = new Set(stan.modele.map((m) => m.id));
     for (const r of sklad) {
-      if (znane.has(r.model_db_id)) zaznacz(r.model_db_id, true);
-      else stan.zachowane.push(r);
+      if (!znane.has(r.model_db_id)) {
+        stan.zachowane.push(r);
+        continue;
+      }
+      stan.wSkladzie.add(r.model_db_id);
+      // Wylaczony w lancuchu (np. suwakiem na stronie Models) = odznaczony.
+      if (r.enabled) zaznacz(r.model_db_id, true);
     }
     // Edycja: domyslnie zostawiamy kolejnosc, ktora lancuch juz ma.
     stan.kolejnosc = 'klik';
@@ -206,18 +233,20 @@ async function wczytajLancuch(id) {
 
 function renderWybor() {
   const sel = document.getElementById('lancuch');
+  const dopisek = (p) => [wbudowany(p) ? 'wbudowany' : '', p.id === stan.aktywny ? 'zwykłe auto' : ''].filter(Boolean).join(', ');
   sel.innerHTML = '<option value="">+ Nowy łańcuch</option>'
-    + custom().map((p) => `<option value="${p.id}">${esc(p.emoji ? `${p.emoji} ` : '')}${esc(p.name)}</option>`).join('');
+    + lancuchy().map((p) => `<option value="${p.id}">${esc(p.emoji ? `${p.emoji} ` : '')}${esc(p.name)}${dopisek(p) ? ` (${dopisek(p)})` : ''}</option>`).join('');
   sel.value = stan.edytowany ? String(stan.edytowany.id) : '';
 }
 
 async function zapisz() {
-  const nazwa = document.getElementById('nazwa').value.trim();
-  const blad = bladNazwy(nazwa);
+  const staly = wbudowany(stan.edytowany);
+  const nazwa = staly ? stan.edytowany.name : document.getElementById('nazwa').value.trim();
+  const blad = staly ? null : bladNazwy(nazwa);
   if (blad) return ustawStatus(blad, true);
   const wybrane = wybraneWKolejnosci();
   if (!wybrane.length) return ustawStatus('Zaznacz przynajmniej jeden model.', true);
-  const kolizja = stan.profile.find((p) => p.name.toLowerCase() === nazwa.toLowerCase() && p.id !== stan.edytowany?.id);
+  const kolizja = staly ? null : stan.profile.find((p) => p.name.toLowerCase() === nazwa.toLowerCase() && p.id !== stan.edytowany?.id);
   if (kolizja) {
     return ustawStatus(kolizja.type === 'custom'
       ? `Łańcuch „${kolizja.name}” już istnieje — wybierz go z listy u góry, żeby go edytować.`
@@ -234,17 +263,23 @@ async function zapisz() {
     } else if (profil.name !== nazwa) {
       await api(`/api/profiles/${profil.id}`, { method: 'PUT', body: JSON.stringify({ name: nazwa }) });
     }
+    // Odznaczony model, ktory lancuch juz mial, zostaje w nim jako wylaczony —
+    // tak jak suwak na stronie Models — zamiast znikac z lancucha.
+    const wybraneId = new Set(wybrane.map((m) => m.id));
+    const wylaczone = stan.modele.filter((m) => stan.wSkladzie.has(m.id) && !wybraneId.has(m.id));
     const sklad = [
       ...wybrane.map((m) => ({ modelDbId: m.id, enabled: true })),
-      ...stan.zachowane.map((r) => ({ modelDbId: r.model_db_id, enabled: r.enabled })),
+      ...wylaczone.map((m) => ({ modelDbId: m.id, enabled: false })),
+      ...stan.zachowane.map((r) => ({ modelDbId: r.model_db_id, enabled: !!r.enabled })),
     ].map((e, i) => ({ ...e, priority: i + 1 }));
     await api(`/api/profiles/${profil.id}/reorder`, { method: 'PUT', body: JSON.stringify(sklad) });
 
     stan.profile = await api('/api/profiles');
-    stan.edytowany = custom().find((p) => p.id === profil.id) ?? null;
+    stan.edytowany = stan.profile.find((p) => p.id === profil.id) ?? null;
+    for (const m of wybrane) stan.wSkladzie.add(m.id);
     renderWybor();
-    document.getElementById('usun').hidden = false;
-    ustawStatus(`Zapisano „${nazwa}”: ${modeli(sklad.length)}. Endpoint i przykłady — w ramce „Jak użyć” u góry.`);
+    document.getElementById('usun').hidden = wbudowany(stan.edytowany);
+    ustawStatus(`Zapisano „${nazwa}”. Włączone: ${wybrane.length}${wylaczone.length ? `, wyłączone: ${wylaczone.length}` : ''}. Endpoint i przykłady są w ramce „Jak użyć” u góry.`);
     renderEndpoint();
   } catch (err) {
     ustawStatus(`Błąd: ${err.message}`, true);
@@ -268,7 +303,8 @@ async function usun() {
   }
 }
 
-async function main() {
+async function main(moj) {
+  const nieaktualny = () => moj !== przebieg || !app.isConnected;
   app.innerHTML = `
     <div class="zk-glowa">
       <h1 class="text-2xl font-semibold tracking-tight">Łańcuchy</h1>
@@ -277,8 +313,13 @@ async function main() {
     <p class="muted">Ładuję…</p>`;
   try {
     stan.cfg = await fetch('/budzet/config.json', { cache: 'no-cache' }).then((r) => r.json());
-    [stan.modele, stan.profile] = await Promise.all([mojeModele(stan.cfg), api('/api/profiles')]);
+    [stan.modele, stan.profile, stan.aktywny] = await Promise.all([
+      mojeModele(stan.cfg),
+      api('/api/profiles'),
+      api('/api/profiles/active').then((r) => r.activeProfileId ?? null).catch(() => null),
+    ]);
   } catch (err) {
+    if (nieaktualny()) return;
     app.lastElementChild.outerHTML = err.auth
       ? '<p class="muted">Sesja wygasła. Zaloguj się w panelu i wróć na tę zakładkę.</p>'
       : `<p class="blad">Nie udało się pobrać danych: ${esc(err.message)}</p>`;
@@ -288,7 +329,7 @@ async function main() {
   // Klucz do /v1 tylko do ramki "Jak uzyc" — bez niego kreator dziala dalej.
   stan.apiKey = await api('/api/settings/api-key').then((r) => r.apiKey ?? null).catch(() => null);
 
-  if (!app.isConnected) return;
+  if (nieaktualny()) return;
   app.lastElementChild.outerHTML = `
     <div class="kreator-gora">
       <label><span>Łańcuch</span>
@@ -297,6 +338,7 @@ async function main() {
       <label><span>Nazwa — w kliencie <code>"model": "auto:nazwa"</code></span>
         <input id="nazwa" type="text" maxlength="20" placeholder="np. kod-szybki" autocomplete="off" spellcheck="false">
       </label>
+      <p class="muted" id="nazwa-uwaga"></p>
       <p class="muted" id="zachowane"></p>
     </div>
     <div class="pula endpoint" id="endpoint"></div>
@@ -369,5 +411,5 @@ async function main() {
 
 window.zkKreator = (kontener) => {
   app = kontener;
-  return main();
+  return main(++przebieg);
 };

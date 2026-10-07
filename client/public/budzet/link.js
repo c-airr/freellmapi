@@ -33,6 +33,9 @@
 
   const TYTUL_PANELU = document.title;
   let narysowana = null; // path strony, ktora jest teraz w <main>
+  // Referencja, nie getElementById: gdy panel podmieni <main>, strona jest
+  // odlaczona od dokumentu i po id by sie nie znalazla.
+  let strona = null;
 
   /** Pozycja menu (bezposrednie dziecko wspolnego rodzica) zawierajaca el. */
   function pozycja(el, rodzic) {
@@ -198,10 +201,10 @@
     const z = ZAKLADKI.find((x) => location.pathname === x.path) ?? null;
     ustawAktywne(z);
     const html = document.documentElement;
-    let strona = document.getElementById('zk-strona');
 
     if (!z) {
       if (strona) strona.remove();
+      strona = null;
       if (narysowana) document.title = TYTUL_PANELU;
       narysowana = null;
       html.classList.remove('zk-on');
@@ -214,7 +217,11 @@
     for (const c of main.children) {
       if (c.id !== 'zk-strona' && !c.hasAttribute('data-zk-ukryj')) c.setAttribute('data-zk-ukryj', '');
     }
-    if (!strona || strona.parentElement !== main || narysowana !== z.path) {
+    if (strona && narysowana === z.path && strona.parentElement !== main) {
+      // Panel podmienil <main> (np. po doladowaniu strony "not found") —
+      // przenosimy gotowa strone ze stanem, zamiast rysowac ja od nowa.
+      main.appendChild(strona);
+    } else if (!strona || narysowana !== z.path) {
       strona?.remove();
       strona = document.createElement('div');
       strona.id = 'zk-strona';
@@ -223,7 +230,8 @@
       document.title = `${z.tytul} · FreeLLMAPI`;
       // Skrypty stron laduja sie rownolegle z panelem — poczekaj na nie.
       const gotowe = () => window.zkBudzet && window.zkKreator && window.zkProjekty && window.zkEndpointy;
-      const start = () => (gotowe() ? z.render(strona) : setTimeout(start, 50));
+      const cel = strona;
+      const start = () => (gotowe() ? z.render(cel) : setTimeout(start, 50));
       start();
     }
   }
