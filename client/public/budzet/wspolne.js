@@ -1,5 +1,5 @@
 // Wspolne funkcje zakladek Budzet i Lancuchy (zwykly skrypt, ladowany przez
-// link.js PRZED budzet-strona.js / kreator.js — dzieli z nimi globalny zakres).
+// link.js PRZED budzet.js / kreator.js — dzieli z nimi globalny zakres).
 // Motyw jasny/ciemny ustawia sam panel.
 
 const TOKEN_KEY = 'freellmapi_dashboard_token';

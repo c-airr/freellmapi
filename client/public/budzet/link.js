@@ -9,7 +9,8 @@
 // React przerysowuje menu i <main>, wiec wszystko pilnuje obserwator.
 (function () {
   const BAZA = '/budzet/';
-  for (const plik of ['wspolne.js', 'budzet-strona.js', 'kreator.js', 'projekty.js', 'endpointy.js']) {
+  // Bez myslnika w nazwach: serwer bierze "nazwa-xxxxxx.js" za plik z hashem i cache'uje go na rok.
+  for (const plik of ['wspolne.js', 'budzet.js', 'kreator.js', 'projekty.js', 'endpointy.js']) {
     const s = document.createElement('script');
     s.src = BAZA + plik;
     s.async = false; // kolejnosc: wspolne.js definiuje funkcje dla pozostalych
