@@ -11,7 +11,7 @@ są w menu pod hamburgerem.
 
 | Zakładka | Adres | Co robi |
 |---|---|---|
-| Budżet | `/budzet-modeli` | Modele od najmądrzejszego, tokeny na dzień i na miesiąc. Liczby z dokumentacji dostawcy są zwykłe, szacunki pomarańczowe z podanym źródłem. |
+| Budżet | `/budzet-modeli` | Modele od najmądrzejszego, tokeny na dzień i na miesiąc. Liczby z dokumentacji dostawcy są zwykłe, szacunki pomarańczowe z podanym źródłem, a żółte to realne limity nauczone z Twoich błędów 429. |
 | Łańcuchy | `/lancuchy` | Kreator łańcuchów (profili): nazwa + zaznaczone modele. Program wywołuje łańcuch przez `"model": "auto:nazwa"`. |
 | Projekty | `/projekty` | Projekt = łańcuchy jednego programu (np. bot Discorda, automatyzacje). Widać, ile ciągnie projekt, każdy łańcuch i które modele odpowiadały. |
 | Endpointy | `/endpointy` | Lista endpointów z opisem po polsku, czytana na żywo z `/v1/openapi.json`. |
@@ -27,6 +27,11 @@ z `client/index.html` i wpina zakładki w menu.
 - Projekty: tabele `projects` i `project_chains` (migracja `20261007_000002_projects`),
   API `GET/POST /api/projects`, `PATCH/DELETE /api/projects/:id` i
   `GET /api/projects/usage?range=24h|7d|30d|90d` (statystyki per łańcuch i model).
+- `GET /api/projects/learned-limits`: dzienny limit tokenów nauczony z ruchu. Dla każdego
+  dnia (UTC), w którym model oddał 429, liczy tokeny udanych zapytań do ostatniego 429;
+  wynik to maksimum z 30 dni (dolna granica limitu, dobija do prawdziwej, gdy limit się
+  wyczerpie). 429 „per minute”, „concurrent” i przeciążenie Zhipu są pomijane. Zakładka
+  Budżet pokazuje to na żółto zamiast pomarańczowego szacunku (oficjalne liczby wygrywają).
 - `LOGIN_MAX_ATTEMPTS` w `.env`: liczba błędnych logowań przed 15-minutową blokadą
   (domyślnie 5, `0` wyłącza blokadę, tylko dla instalacji dostępnej z sieci prywatnej).
 

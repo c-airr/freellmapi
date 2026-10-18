@@ -58,12 +58,14 @@ header nav .zk-wiecej { display: none; position: relative; }
 
 #zk-strona {
   --zk-nieof: oklch(60% .16 55);
+  --zk-nauk: oklch(58% .13 95);
   --zk-akcent: oklch(55% .17 255);
   --zk-r: 1rem;
   font-size: 14px;
 }
 .dark #zk-strona {
   --zk-nieof: oklch(78% .14 70);
+  --zk-nauk: oklch(88% .16 100);
   --zk-akcent: oklch(72% .13 250);
 }
 
@@ -148,11 +150,15 @@ header nav .zk-wiecej { display: none; position: relative; }
   vertical-align: middle;
 }
 
-/* Pasek tokenow: pelny = oficjalne, kreskowany = szacunek. */
+/* Pasek tokenow: pelny = oficjalne, kreskowany = szacunek (zolty = nauczony z bledow 429). */
 #zk-strona .ofic { background: var(--foreground); }
 #zk-strona .nieof {
   background: repeating-linear-gradient(-45deg, var(--zk-nieof) 0 3px, transparent 3px 5px);
   box-shadow: inset 0 0 0 1px var(--zk-nieof);
+}
+#zk-strona .nauk {
+  background: repeating-linear-gradient(-45deg, var(--zk-nauk) 0 3px, transparent 3px 5px);
+  box-shadow: inset 0 0 0 1px var(--zk-nauk);
 }
 #zk-strona .zk-pasek {
   width: 96px;
@@ -198,6 +204,8 @@ header nav .zk-wiecej { display: none; position: relative; }
 #zk-strona .zk-zrodlo-nieof { color: var(--zk-nieof); }
 #zk-strona .zk-ofic { color: var(--foreground); font-weight: 500; }
 #zk-strona .zk-nieof { color: var(--zk-nieof); }
+#zk-strona .zk-nauk { color: var(--zk-nauk); }
+#zk-strona .zk-zrodlo-nauk { color: var(--zk-nauk); }
 #zk-strona .zk-pusto { padding: 32px 14px; text-align: center; color: var(--muted-foreground); }
 #zk-strona .zk-stopka { margin-top: 12px; max-width: 90ch; }
 

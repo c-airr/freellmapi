@@ -209,4 +209,30 @@ describe('projects', () => {
       expect(usage.body.chains.find((c: any) => c.profileId === gone)).toMatchObject({ name: 'stary', deleted: true, requests: 1 });
     });
   });
+
+  describe('learned limits', () => {
+    function log(model: string, status: string, tokens: number, error: string | null, at: string) {
+      getDb().prepare(`
+        INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, created_at)
+        VALUES ('fake', ?, ?, ?, 0, 1, ?, ?)
+      `).run(model, status, tokens, error, at);
+    }
+
+    it('takes the tokens served that day up to the last daily 429, max over days', async () => {
+      const d1 = new Date(Date.now() - 2 * 86400e3).toISOString().slice(0, 10);
+      const d2 = new Date(Date.now() - 86400e3).toISOString().slice(0, 10);
+      log('m', 'success', 999, null, `${d1} 00:00:00`); // dzien wczesniej, nie liczy sie
+      log('m', 'success', 400, null, `${d2} 01:00:00`);
+      log('m', 'success', 600, null, `${d2} 02:00:00`);
+      log('m', 'error', 0, 'API error 429: quota exceeded', `${d2} 03:00:00`);
+      log('m', 'success', 50, null, `${d2} 04:00:00`); // po 429, nie liczy sie
+      log('m', 'error', 0, 'API error 429: tokens per minute', `${d1} 05:00:00`); // limit minutowy, pomijany
+      log('rpm', 'success', 500, null, `${d2} 01:00:00`);
+      log('rpm', 'error', 0, 'API error 429: input tokens per minute (ITPM)', `${d2} 02:00:00`);
+
+      const res = await request(app, 'GET', '/api/projects/learned-limits', { token: dashToken });
+      expect(res.status).toBe(200);
+      expect(res.body.models).toEqual([{ platform: 'fake', modelId: 'm', tokens: 1000, days: 1, lastDay: d2 }]);
+    });
+  });
 });

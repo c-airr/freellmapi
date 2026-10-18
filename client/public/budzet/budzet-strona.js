@@ -6,7 +6,9 @@
 //  - zwykly  = OFICJALNE: liczba opublikowana przez dostawce w jego
 //              dokumentacji (lista dostawcow i linki: config.json -> "oficjalne"),
 //  - pomaranczowy "~" = NIEOFICJALNE: szacunek z katalogu FreeLLMAPI albo
-//              wyliczenie z Twoich logow; zrodlo w ostatniej kolumnie.
+//              wyliczenie z Twoich logow; zrodlo w ostatniej kolumnie,
+//  - zolty "~" = NAUCZONE: model oddal 429, wiec tyle tokenow zjadl tego dnia
+//              do bledu (max z 30 dni, /api/projects/learned-limits).
 // Pasek przy liczbie: pelny = oficjalne, kreskowany = szacunek (skala log).
 //
 // Wspolne funkcje (api, fmt, esc): wspolne.js.
@@ -39,7 +41,7 @@
     return Number(m[1]) * (m[2] ? 1000 : 1);
   }
 
-  function policz(m, katalog, budzet, sr, cfg) {
+  function policz(m, katalog, budzet, sr, cfg, nauczone) {
     const ofic = cfg.oficjalne?.[m.platform] ?? null;
     const pola = new Set(ofic?.pola ?? []);
     const klucze = Math.max(1, katalog?.keyCount ?? 1);
@@ -83,10 +85,20 @@
         txt: `wyliczone: ${skad}${klucze > 1 ? ` × ${klucze} klucze` : ''} × ~${fmt(srednia)} tok./zap.`,
         tytul: 'Średnia tokenów na udane zapytanie z Twoich logów FreeLLMAPI (30 dni)',
       };
-    } else if (/no token cap/i.test(opis)) {
-      zrodlo = { txt: 'bez limitu tokenów, tylko kolejka (Kudos)' };
-    } else {
-      zrodlo = { txt: `brak danych${opis ? `, katalog: „${opis}”` : ''}` };
+    }
+
+    // Realny limit z wlasnych bledow 429 wygrywa z kazdym szacunkiem, nie z oficjalnym.
+    const n = nauczone.get(`${m.platform}|${m.modelId}`);
+    if (n && !oficjalne) {
+      dzien = n.tokens;
+      zrodlo = {
+        txt: `nauczone z błędów 429: tyle zjadł danego dnia do limitu (${n.days} ${n.days === 1 ? 'dzień' : 'dni'} z limitem w 30 dni, ostatnio ${n.lastDay})`,
+        tytul: 'Suma tokenów udanych zapytań od północy UTC do ostatniego błędu 429 tego dnia; najwyższa z 30 dni. Rośnie, gdy znów dobijesz do limitu.',
+      };
+    } else if (dzien == null) {
+      zrodlo = /no token cap/i.test(opis)
+        ? { txt: 'bez limitu tokenów, tylko kolejka (Kudos)' }
+        : { txt: `brak danych${opis ? `, katalog: „${opis}”` : ''}` };
     }
 
     return {
@@ -97,6 +109,7 @@
       dzien,
       miesiac: dzien != null ? dzien * DNI : null,
       oficjalne,
+      nauczone: !!(n && !oficjalne),
       zrodlo,
       limity,
       wspolny,
@@ -104,17 +117,19 @@
   }
 
   async function zaladuj() {
-    const [tu, modele, by30, cfg] = await Promise.all([
+    const [tu, modele, by30, cfg, nauk] = await Promise.all([
       api('/api/fallback/token-usage'),
       api('/api/models'),
       api('/api/analytics/by-model?range=30d'),
       fetch('/budzet/config.json', { cache: 'no-cache' }).then((r) => r.json()),
+      api('/api/projects/learned-limits'),
     ]);
+    const nauczone = new Map(nauk.models.map((n) => [`${n.platform}|${n.modelId}`, n]));
     const katalog = new Map(modele.map((m) => [m.id, m]));
     const sr = srednie(by30);
     const wiersze = tu.models
       .filter((m) => m.enabled)
-      .map((m) => policz(m, katalog.get(m.modelDbId), m.budget, sr, cfg));
+      .map((m) => policz(m, katalog.get(m.modelDbId), m.budget, sr, cfg, nauczone));
 
     // Pula wspolna dla konta/IP: ile modeli z niej pije.
     const wPuli = new Map();
@@ -136,11 +151,13 @@
     return (v) => Math.max(3, Math.min(100, ((Math.log10(Math.max(v, 1)) - lo) / (hi - lo)) * 100));
   }
 
+  const rodzaj = (w) => (w.oficjalne ? 'ofic' : w.nauczone ? 'nauk' : 'nieof');
+
   function liczba(w, wartosc) {
     if (wartosc == null) return '<span class="zk-szary">—</span>';
     return w.oficjalne
       ? `<span class="zk-ofic">${fmt(wartosc)}</span>`
-      : `<span class="zk-nieof">~${fmt(wartosc)}</span>`;
+      : `<span class="zk-${rodzaj(w)}">~${fmt(wartosc)}</span>`;
   }
 
   function wiersz(w, i, szer) {
@@ -152,7 +169,7 @@
       : esc(w.zrodlo.txt);
     const tytul = w.zrodlo.tytul ? ` title="${esc(w.zrodlo.tytul)}"` : '';
     const pasek = w.dzien != null
-      ? `<div class="zk-pasek" aria-hidden="true"><i class="${w.oficjalne ? 'ofic' : 'nieof'}" style="width:${szer(w.dzien).toFixed(1)}%"></i></div>`
+      ? `<div class="zk-pasek" aria-hidden="true"><i class="${rodzaj(w)}" style="width:${szer(w.dzien).toFixed(1)}%"></i></div>`
       : '';
     const pula = w.puli > 1 ? `<div class="zk-pod">pula wspólna dla ${w.puli} modeli ${esc(w.platforma)}</div>` : '';
     return `
@@ -165,7 +182,7 @@
         <td class="zk-n zk-dzien">${liczba(w, w.dzien)}${pasek}</td>
         <td class="zk-n">${liczba(w, w.miesiac)}${pula}</td>
         <td class="zk-lim">${limity}</td>
-        <td class="zk-zrodlo ${w.oficjalne ? '' : 'zk-zrodlo-nieof'}"${tytul}>${zrodlo}</td>
+        <td class="zk-zrodlo ${w.oficjalne ? '' : `zk-zrodlo-${rodzaj(w)}`}"${tytul}>${zrodlo}</td>
       </tr>`;
   }
 
@@ -187,7 +204,7 @@
     el.innerHTML = `
       <div class="zk-glowa">
         <h1 class="text-2xl font-semibold tracking-tight">Budżet</h1>
-        <p class="text-sm text-muted-foreground mt-1">Ile tokenów dziennie i miesięcznie daje każdy model, od najmądrzejszego. Zwykłe liczby publikuje dostawca, pomarańczowe z tyldą to szacunki.</p>
+        <p class="text-sm text-muted-foreground mt-1">Ile tokenów dziennie i miesięcznie daje każdy model, od najmądrzejszego. Zwykłe liczby publikuje dostawca, pomarańczowe z tyldą to szacunki, żółte to realne limity nauczone z błędów 429.</p>
       </div>
       <p class="zk-szary">Ładuję…</p>`;
     let dane;
@@ -211,6 +228,7 @@
         <div class="zk-legenda">
           <span><i class="zk-wzor ofic"></i>oficjalne, z dokumentacji: ${linki || 'brak'}</span>
           <span><i class="zk-wzor nieof"></i><span class="zk-nieof">szacunek</span>, źródło w ostatniej kolumnie</span>
+          <span><i class="zk-wzor nauk"></i><span class="zk-nauk">szacunek realny</span>, nauczony z Twoich błędów limitu (429)</span>
         </div>
       </div>
       <div class="zk-tabela">

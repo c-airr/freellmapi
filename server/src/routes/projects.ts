@@ -285,3 +285,36 @@ projectsRouter.get('/usage', (req, res) => {
     chains: [...chains.values()].sort((a, b) => b.requests - a.requests || a.name.localeCompare(b.name)),
   });
 });
+
+/**
+ * Daily token limits learned from your own traffic, for the Budget tab. When a
+ * model answers 429, the tokens it served that (UTC) day up to the last 429 are
+ * a lower bound of its daily limit; the max over 30 days converges on the real
+ * cap once the quota has actually been exhausted. Per-minute, concurrency and
+ * overload 429s are skipped — they say nothing about the daily budget.
+ * shortcut: UTC day, while providers reset at their own hour (Google: midnight
+ * Pacific); upgrade with a per-provider reset time if the numbers look off.
+ */
+projectsRouter.get('/learned-limits', (_req, res) => {
+  const rows = getDb().prepare(`
+    WITH hits AS (
+      SELECT platform, model_id, date(created_at) AS day, MAX(id) AS last_id
+      FROM requests
+      WHERE status = 'error' AND error LIKE '%429%' AND created_at >= ?
+        AND error NOT LIKE '%per minute%' AND error NOT LIKE '%concurrent%'
+        AND error NOT LIKE '%访问量过大%'
+      GROUP BY platform, model_id, day
+    ), per_day AS (
+      SELECT h.platform, h.model_id, h.day, (
+        SELECT COALESCE(SUM(r.input_tokens + r.output_tokens), 0) FROM requests r
+        WHERE r.platform = h.platform AND r.model_id = h.model_id AND r.status = 'success'
+          AND r.created_at >= h.day AND r.id < h.last_id
+      ) AS tokens
+      FROM hits h
+    )
+    SELECT platform, model_id AS modelId, MAX(tokens) AS tokens, COUNT(*) AS days, MAX(day) AS lastDay
+    FROM per_day WHERE tokens > 0
+    GROUP BY platform, model_id
+  `).all(getSinceTimestamp('30d'));
+  res.json({ models: rows });
+});
