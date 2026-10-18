@@ -88,8 +88,11 @@
     }
 
     // Realny limit z wlasnych bledow 429 wygrywa z kazdym szacunkiem, nie z oficjalnym.
+    // Stary szacunek zostaje obok: limit bywa w zapytaniach albo miesieczny, a 429 tego nie powie.
     const n = nauczone.get(`${m.platform}|${m.modelId}`);
+    let szacunek = null;
     if (n && !oficjalne) {
+      if (dzien != null) szacunek = { dzien, zrodlo };
       dzien = n.tokens;
       zrodlo = {
         txt: `nauczone z błędów 429: tyle zjadł danego dnia do limitu (${n.days} ${n.days === 1 ? 'dzień' : 'dni'} z limitem w 30 dni, ostatnio ${n.lastDay})`,
@@ -110,6 +113,7 @@
       miesiac: dzien != null ? dzien * DNI : null,
       oficjalne,
       nauczone: !!(n && !oficjalne),
+      szacunek,
       zrodlo,
       limity,
       wspolny,
@@ -167,10 +171,12 @@
     const zrodlo = w.zrodlo.url
       ? `<a href="${esc(w.zrodlo.url)}" target="_blank" rel="noopener">${esc(w.zrodlo.txt)}</a>`
       : esc(w.zrodlo.txt);
+    const zrodloSzac = w.szacunek ? `<div class="zk-pod zk-nieof">szacunek: ${esc(w.szacunek.zrodlo.txt)}</div>` : '';
     const tytul = w.zrodlo.tytul ? ` title="${esc(w.zrodlo.tytul)}"` : '';
     const pasek = w.dzien != null
       ? `<div class="zk-pasek" aria-hidden="true"><i class="${rodzaj(w)}" style="width:${szer(w.dzien).toFixed(1)}%"></i></div>`
       : '';
+    const stary = (v) => (w.szacunek ? `<div class="zk-pod zk-nieof" title="Szacunek sprzed nauki">szac. ~${fmt(v)}</div>` : '');
     const pula = w.puli > 1 ? `<div class="zk-pod">pula wspólna dla ${w.puli} modeli ${esc(w.platforma)}</div>` : '';
     return `
       <tr>
@@ -179,10 +185,10 @@
           <div class="zk-nazwa">${esc(w.nazwa)} <span class="zk-rank" title="Ranking inteligencji FreeLLMAPI (mniej = mądrzejszy)">#${w.rank ?? '?'}</span></div>
           <div class="zk-pod">${esc(w.platforma)} · ${esc(w.modelId)}</div>
         </td>
-        <td class="zk-n zk-dzien">${liczba(w, w.dzien)}${pasek}</td>
-        <td class="zk-n">${liczba(w, w.miesiac)}${pula}</td>
+        <td class="zk-n zk-dzien">${liczba(w, w.dzien)}${pasek}${stary(w.szacunek?.dzien)}</td>
+        <td class="zk-n">${liczba(w, w.miesiac)}${stary(w.szacunek?.dzien * DNI)}${pula}</td>
         <td class="zk-lim">${limity}</td>
-        <td class="zk-zrodlo ${w.oficjalne ? '' : `zk-zrodlo-${rodzaj(w)}`}"${tytul}>${zrodlo}</td>
+        <td class="zk-zrodlo ${w.oficjalne ? '' : `zk-zrodlo-${rodzaj(w)}`}"${tytul}>${zrodlo}${zrodloSzac}</td>
       </tr>`;
   }
 
