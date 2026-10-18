@@ -221,6 +221,7 @@
     if (strona && narysowana === z.path && strona.parentElement !== main) {
       // Panel podmienil <main> (np. po doladowaniu strony "not found") —
       // przenosimy gotowa strone ze stanem, zamiast rysowac ja od nowa.
+      // Do tej klatki strona jest odpieta, wiec zakladki nie sprawdzaja isConnected po await.
       main.appendChild(strona);
     } else if (!strona || narysowana !== z.path) {
       strona?.remove();

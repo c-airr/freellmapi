@@ -199,7 +199,7 @@
   }
 
   function render() {
-    if (!el?.isConnected) return;
+    if (!el) return;
     const segment = ZAKRESY.map((z) => `<button type="button" class="${z.id === stan.zakres ? 'on' : ''}" data-zakres="${z.id}" aria-pressed="${z.id === stan.zakres}">${z.tekst}</button>`).join('');
     const karty = stan.projekty.map(kartaProjektu).join('');
     const pusto = !stan.projekty.length && !stan.edytor
@@ -353,7 +353,6 @@
     try {
       await wczytajWszystko();
     } catch (err) {
-      if (!el.isConnected) return;
       el.querySelector('#pj-tresc').innerHTML = err.auth
         ? '<p class="zk-szary">Sesja wygasła. Zaloguj się w panelu i wróć na tę zakładkę.</p>'
         : `<p class="zk-blad">Nie udało się pobrać projektów: ${esc(err.message)}</p>`;

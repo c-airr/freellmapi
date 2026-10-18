@@ -96,7 +96,6 @@
       el.lastElementChild.outerHTML = `<p class="zk-blad">Nie udało się pobrać listy endpointów: ${esc(err.message)}</p>`;
       return;
     }
-    if (!el.isConnected) return;
 
     const poTagu = new Map();
     for (const [sciezka, operacje] of Object.entries(spec.paths ?? {})) {

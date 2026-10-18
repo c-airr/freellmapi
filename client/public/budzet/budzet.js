@@ -222,7 +222,6 @@
         : `<p class="zk-blad">Nie udało się pobrać danych: ${esc(err.message)}</p>`;
       return;
     }
-    if (!el.isConnected) return;
 
     const linki = Object.entries(dane.cfg.oficjalne ?? {})
       .map(([p, o]) => `<a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(p)}</a>`)

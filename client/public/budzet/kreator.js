@@ -304,7 +304,7 @@ async function usun() {
 }
 
 async function main(moj) {
-  const nieaktualny = () => moj !== przebieg || !app.isConnected;
+  const nieaktualny = () => moj !== przebieg;
   app.innerHTML = `
     <div class="zk-glowa">
       <h1 class="text-2xl font-semibold tracking-tight">Łańcuchy</h1>
