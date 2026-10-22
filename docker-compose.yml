@@ -50,6 +50,20 @@ services:
       start_period: 15s
       retries: 3
 
+  # Fork c-airr: darmowe modele OpenCode (deepseek-v4.1-flash-free,
+  # glm-5.3-flash-free, ...) przez zen-proxy. Wlaczenie: w .env
+  # OPENCODE_PROXY_URL=http://zen-proxy:8787/v1, potem
+  # `docker compose --profile opencode up -d`. FreeLLMAPI sam doda endpoint
+  # i modele (zakladka Keys -> Custom). Port nie jest wystawiony na hosta.
+  zen-proxy:
+    build:
+      context: docker/zen-proxy
+    profiles: ["opencode"]
+    environment:
+      # Opcjonalnie wlasny klucz OpenCode Zen (platne modele / wiekszy limit).
+      ZEN_KEY: ${OPENCODE_ZEN_KEY:-}
+    restart: unless-stopped
+
   # Opt-in self-update: `docker compose --profile autoupdate up -d` with
   # WATCHTOWER_TOKEN set in .env. Watchtower (the maintained nicholas-fedor
   # fork) runs with only its token-protected update endpoint, which the
