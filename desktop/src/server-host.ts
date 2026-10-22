@@ -7,7 +7,6 @@
 // The server sources live in this same repo (../../server). Keep these
 // relative imports in sync with the repo-root default in main.ts.
 import '../../server/src/env.js';
-import crypto from 'node:crypto';
 import tls from 'node:tls';
 import type { Server } from 'node:http';
 import { createApp } from '../../server/src/app.js';
@@ -16,6 +15,7 @@ import { restoreProxySettings, flushProxyCache, getProxyMode, getProxyUrl, isPro
 import { startHealthChecker, checkAllKeys } from '../../server/src/services/health.js';
 import { startCatalogSync } from '../../server/src/services/catalog-sync.js';
 import { startCooldownProbe } from '../../server/src/services/cooldown-probe.js';
+import { startModelProbe } from '../../server/src/services/model-probe.js';
 import { startCustomModelSync } from '../../server/src/services/custom-model-sync.js';
 import { startBuiltinModelDiscovery } from '../../server/src/services/builtin-model-discovery.js';
 import { startBackupScheduler, createBackup } from '../../server/src/services/backups.js';
@@ -25,7 +25,7 @@ import { loadCacheFromDb } from '../../server/src/services/cache.js';
 import { startWakeDetect } from '../../server/src/lib/wake-detect.js';
 import { installProcessSafetyNet } from '../../server/src/lib/process-safety-net.js';
 import { installLogRedaction } from '../../server/src/lib/log-redaction.js';
-import { userCount, createUser, createSession } from '../../server/src/services/auth.js';
+import { desktopSessionToken } from '../../server/src/services/auth.js';
 import { NodeScheduler } from '../../server/src/lib/scheduler.js';
 
 export { getDb, getUnifiedApiKey, isAutoUpdateCheckEnabled };
@@ -49,6 +49,9 @@ export interface StartOptions {
   host: string;
   preferredPort: number;
 }
+
+// main.ts registers Electron's net.fetch here (see setCatalogFallbackFetch).
+export { setCatalogFallbackFetch } from '../../server/src/services/catalog-sync.js';
 
 export interface ServerHandle {
   server: Server;
@@ -152,6 +155,7 @@ export async function startServer(opts: StartOptions): Promise<ServerHandle> {
   startHealthChecker(scheduler);
   startCatalogSync(scheduler);
   startCooldownProbe(scheduler);
+  startModelProbe(scheduler);
   startBackupScheduler(scheduler);
   startCustomModelSync(getDb(), scheduler);
   startBuiltinModelDiscovery(getDb(), scheduler);
@@ -177,11 +181,7 @@ export async function startServer(opts: StartOptions): Promise<ServerHandle> {
 // The dashboard window authenticates as a hidden machine user. The password
 // is random and never shown — sessions are minted directly against the DB.
 export function ensureSessionToken(): string {
-  if (userCount() === 0) {
-    createUser('desktop@localhost', crypto.randomBytes(24).toString('hex'));
-  }
-  const first = getDb().prepare('SELECT id FROM users ORDER BY id ASC LIMIT 1').get() as { id: number };
-  return createSession(first.id);
+  return desktopSessionToken();
 }
 
 async function listenWithScan(

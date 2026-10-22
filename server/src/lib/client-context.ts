@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import type { NextFunction, Request, Response } from 'express';
 import { classifyClientAgent, type ClientAgent } from './client-classifier.js';
+import type { PresetStrategy } from '../services/scoring.js';
 
 export interface ClientContext {
   ip: string | null;
@@ -11,6 +12,9 @@ export interface ClientContext {
   // by logRequest so per-chain usage (projects) can be attributed. Not caller
   // identity, so it is recorded even when client logging is opted out.
   chain?: RoutingChainRef | null;
+  /** The preset a decision model picked for this request (#1354), read by the
+   *  router while the 'decision' strategy is active. Unset = Balanced. */
+  routingStrategy?: PresetStrategy;
 }
 
 export interface RoutingChainRef {
@@ -64,4 +68,11 @@ export function getClientContext(): ClientContext {
 export function setRoutingChain(chain: RoutingChainRef | null): void {
   const store = storage.getStore();
   if (store) store.chain = chain;
+}
+
+/** Record this request's decision-picked preset (#1354). A no-op outside a
+ *  request scope (tests, background work), which then routes as Balanced. */
+export function setRequestRoutingStrategy(strategy: PresetStrategy | undefined): void {
+  const store = storage.getStore();
+  if (store) store.routingStrategy = strategy;
 }
