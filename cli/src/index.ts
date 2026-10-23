@@ -3,10 +3,11 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { spawn } from 'node:child_process';
+import spawn from 'cross-spawn';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { applyGeneratedFiles, printDryRunDiff } from './config-files.js';
+import { detectChatGptClient } from './detect.js';
 import { getTool, tools } from './tools.js';
 import { resolveLaunchModel, type ResolvedModel } from './models.js';
 import { DOCTOR_TOOLS, diagnose, exitCodeFor, formatReport, type ToolReport } from './doctor.js';
@@ -49,7 +50,7 @@ function parseTimeout(value: string): number {
 
 export function parseArgs(argv: string[]): { command?: string; options: CliOptions } {
   const options: CliOptions = {
-    url: process.env.FREELLMAPI_URL || 'http://localhost:3000',
+    url: process.env.FREELLMAPI_URL || 'http://localhost:3001',
     apiKey: process.env.FREELLMAPI_API_KEY,
     token: process.env.FREELLMAPI_DASHBOARD_TOKEN,
     profile: 'default',
@@ -271,7 +272,7 @@ function help(): string {
     '  doctor [tool…]    Check whether a tool\'s requests actually reach this gateway',
     '                    (--timeout MS raises the probe wait on a slow link)',
     '  launch            Run Claude Code with credentials injected into the child environment',
-    '  launch-codex      Run Codex with provider overrides and injected credentials',
+    '  launch-codex      Run Codex CLI with provider overrides and injected credentials',
     '  list              List supported coding agents',
     '  keys              Add, list, remove, or test provider keys (keys --help)',
     '',
@@ -297,6 +298,7 @@ async function setup(command: string, options: CliOptions): Promise<void> {
     models: rosters.available,
     homeDir: os.homedir(),
     requestedModelId,
+    detectedClient: detectChatGptClient(),
   };
   const generation = tool.generate(context);
 

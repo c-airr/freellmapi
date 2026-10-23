@@ -6,7 +6,9 @@ import { restoreProxySettings, flushProxyCache } from './lib/proxy.js';
 import { startWakeDetect } from './lib/wake-detect.js';
 import { startCatalogSync } from './services/catalog-sync.js';
 import { startCooldownProbe } from './services/cooldown-probe.js';
+import { startModelProbe } from './services/model-probe.js';
 import { startCustomModelSync } from './services/custom-model-sync.js';
+import { startOpenCodeProxy } from './services/opencode-free.js';
 import { startBuiltinModelDiscovery } from './services/builtin-model-discovery.js';
 import { installProcessSafetyNet } from './lib/process-safety-net.js';
 import { NodeScheduler } from './lib/scheduler.js';
@@ -84,9 +86,11 @@ async function main() {
     startHealthChecker(scheduler);
     startCatalogSync(scheduler);
     startCooldownProbe(scheduler);
+    startModelProbe(scheduler);
     startDbBackupPump(getDb(), scheduler, config.dbPath ?? undefined);
     startBackupScheduler(scheduler);
     startCustomModelSync(getDb(), scheduler);
+    startOpenCodeProxy(getDb(), scheduler);
     startBuiltinModelDiscovery(getDb(), scheduler);
 
     // Post-sleep recovery: while the host was suspended (laptop lid, VM

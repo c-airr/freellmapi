@@ -64,6 +64,12 @@ vi.mock('../../../server/src/services/cooldown-probe.js', () => ({
   }),
 }));
 
+vi.mock('../../../server/src/services/model-probe.js', () => ({
+  startModelProbe: vi.fn(() => {
+    calls.push('startModelProbe');
+  }),
+}));
+
 vi.mock('../../../server/src/services/backups.js', () => ({
   startBackupScheduler: vi.fn(() => {
     calls.push('startBackupScheduler');
@@ -74,6 +80,13 @@ vi.mock('../../../server/src/services/backups.js', () => ({
 vi.mock('../../../server/src/services/custom-model-sync.js', () => ({
   startCustomModelSync: vi.fn(() => {
     calls.push('startCustomModelSync');
+    return null;
+  }),
+}));
+
+vi.mock('../../../server/src/services/opencode-free.js', () => ({
+  startOpenCodeProxy: vi.fn(() => {
+    calls.push('startOpenCodeProxy');
     return null;
   }),
 }));
@@ -174,8 +187,10 @@ describe('desktop server boot sequence (#949)', () => {
       'startHealthChecker',
       'startCatalogSync',
       'startCooldownProbe',
+      'startModelProbe',
       'startBackupScheduler',
       'startCustomModelSync',
+      'startOpenCodeProxy',
       'startBuiltinModelDiscovery',
       'startWakeDetect',
     ]);

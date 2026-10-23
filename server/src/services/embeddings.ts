@@ -15,9 +15,13 @@ import { getClientContext } from '../lib/client-context.js';
 import { reserveProviderCredential } from './provider-credential.js';
 import { proxyFetch } from '../lib/proxy.js';
 import { bearerAuthHeader } from '../lib/credential.js';
+import { markKeyHealthyFromRequest } from './health.js';
 import { customEndpointKeyIds } from './custom-endpoint.js';
 import type { Db } from '../db/types.js';
 import { SPEKA_BASE_URL } from '../providers/speka.js';
+import { ELECTRONHUB_BASE_URL } from '../providers/electronhub.js';
+import { INFERBASE_BASE_URL } from '../providers/inferbase.js';
+import { LLMTR_BASE_URL } from '../providers/llmtr.js';
 
 export interface EmbeddingModelRow {
   id: number;
@@ -109,12 +113,14 @@ export const EMBEDDING_PLATFORMS = new Set([
   'google',
   'nvidia',
   'openrouter',
-  'github',
   'cloudflare',
   'huggingface',
   'cohere',
   'sealion',
   'speka',
+  'electronhub',
+  'inferbase',
+  'llmtr',
 ]);
 
 interface ProviderCallResult {
@@ -130,6 +136,8 @@ async function openAiStyleEmbed(
   inputs: string[],
   extra: Record<string, unknown> = {},
   dimensions?: number,
+  expectedDimensions?: number,
+  timeoutMs = FETCH_TIMEOUT_MS,
 ): Promise<ProviderCallResult> {
   const body: Record<string, unknown> = { model: modelId, input: inputs, ...extra };
   // Some providers (NVIDIA NeMo NIM, Google Gemini Embedding, OpenAI v3) support
@@ -145,16 +153,28 @@ async function openAiStyleEmbed(
     // header instead of sending `Bearer no-key` (#1331).
     headers: { 'Content-Type': 'application/json', ...bearerAuthHeader(key) },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  }, platform, 'embedding', FETCH_TIMEOUT_MS);
+    signal: AbortSignal.timeout(timeoutMs),
+  }, platform, 'embedding', timeoutMs);
   if (!r.ok) {
     throw await upstreamEmbeddingsError(r);
   }
   const j = (await r.json()) as {
+    model?: string;
     data?: { index?: number; embedding: number[] }[];
     usage?: { prompt_tokens?: number; total_tokens?: number };
   };
   const data = [...(j.data ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+  if (['electronhub', 'inferbase', 'llmtr'].includes(platform) && (
+    j.model !== modelId || data.length !== inputs.length ||
+    data.some((d, i) => d.index !== i || !Array.isArray(d.embedding) ||
+      d.embedding.length !== (dimensions ?? expectedDimensions) ||
+      d.embedding.some(value => typeof value !== 'number' || !Number.isFinite(value)))
+  )) {
+    // A successful HTTP response is not enough: wrong model/dimension or
+    // malformed vectors would corrupt the caller's embedding family.
+    const provider = platform === 'electronhub' ? 'ElectronHub' : platform === 'llmtr' ? 'LLMTR' : 'Inferbase';
+    throw new EmbeddingsError(`${provider} returned mismatched or malformed embeddings`, 502);
+  }
   return {
     vectors: data.map(d => d.embedding),
     inputTokens: j.usage?.prompt_tokens ?? j.usage?.total_tokens ?? null,
@@ -261,12 +281,21 @@ async function callProvider(row: EmbeddingModelRow, credential: ProviderCredenti
       return openAiStyleEmbed('https://integrate.api.nvidia.com/v1/embeddings', row.platform, key, row.model_id, inputs, { input_type: 'query' }, dimensions);
     case 'openrouter':
       return openAiStyleEmbed('https://openrouter.ai/api/v1/embeddings', row.platform, key, row.model_id, inputs, {}, dimensions);
-    case 'github':
-      return openAiStyleEmbed('https://models.github.ai/inference/embeddings', row.platform, key, row.model_id, inputs, {}, dimensions);
     case 'sealion':
       return openAiStyleEmbed('https://api.sea-lion.ai/v1/embeddings', row.platform, key, row.model_id, inputs, {}, dimensions);
     case 'speka':
       return openAiStyleEmbed(`${SPEKA_BASE_URL}/embeddings`, row.platform, key, row.model_id, inputs, { encoding_format: 'float' }, dimensions);
+    case 'electronhub':
+      return openAiStyleEmbed(`${ELECTRONHUB_BASE_URL}/embeddings`, row.platform, key, row.model_id, inputs, { encoding_format: 'float' }, dimensions, row.dimensions);
+    case 'inferbase':
+      return openAiStyleEmbed(`${INFERBASE_BASE_URL}/embeddings`, row.platform, key, row.model_id, inputs, { encoding_format: 'float' }, dimensions, row.dimensions);
+    case 'llmtr':
+      // The catalog-approved models return fixed-width vectors. Do not send a
+      // dimension override or accept a substituted model/embedding space.
+      if (dimensions !== undefined && dimensions !== row.dimensions) {
+        throw new EmbeddingsError('LLMTR does not support an embedding dimension override', 400);
+      }
+      return openAiStyleEmbed(`${LLMTR_BASE_URL}/embeddings`, row.platform, key, row.model_id, inputs, {}, undefined, row.dimensions);
     case 'cloudflare': {
       // Key is stored as "account_id:token".
       const sep = key.indexOf(':');
@@ -380,6 +409,11 @@ export async function runEmbeddings(model: string | undefined, inputs: string[],
       }
       const tokens = out.inputTokens ?? estimateTokens(inputs);
       logEmbeddingRequest(row, credential.id, 'success', tokens, Date.now() - started, null);
+      // A served embedding is evidence the key works, the same as a served
+      // chat request (#1493) or a served search (#1612): stamp last_healthy_at
+      // and lift an 'unknown'/'error' key. Embedding-only keys (and #1459-era
+      // providers that refuse probes) had no success signal at all otherwise.
+      markKeyHealthyFromRequest(credential.id);
       return {
         family,
         platform: row.platform,

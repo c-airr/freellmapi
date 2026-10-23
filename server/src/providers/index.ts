@@ -3,6 +3,12 @@ import type { BaseProvider } from './base.js';
 import { GoogleProvider } from './google.js';
 import { OpenAICompatProvider } from './openai-compat.js';
 import { CohereProvider } from './cohere.js';
+import { TavilyProvider } from './tavily.js';
+import { ExaProvider } from './exa.js';
+import { FirecrawlProvider } from './firecrawl.js';
+import { LinkupProvider } from './linkup.js';
+import { ParallelProvider } from './parallel.js';
+import { KeenableProvider } from './keenable.js';
 import { CloudflareProvider } from './cloudflare.js';
 import { AIHordeProvider } from './aihorde.js';
 import { ModelScopeProvider } from './modelscope.js';
@@ -12,6 +18,9 @@ import { SailProvider } from './sail.js';
 import { AclideProvider } from './aclide.js';
 import { SpekaProvider } from './speka.js';
 import { TyphoonProvider } from './typhoon.js';
+import { PlugskyProvider } from './plugsky.js';
+import { InferbaseProvider } from './inferbase.js';
+import { SimpleLLMProvider } from './simplellm.js';
 import { LlmtrProvider } from './llmtr.js';
 import { GizmoProvider } from './gizmo.js';
 import { BlockRunProvider } from './blockrun.js';
@@ -22,12 +31,18 @@ import { Router9Provider } from './router9.js';
 import { SeptorProvider } from './septor.js';
 import { ClodProvider } from './clod.js';
 import { SpeechifyProvider } from './speechify.js';
+import { FreeAiProvider } from './freeai.js';
 import { BlazeProvider } from './blaze.js';
 import { LucidityProvider } from './lucidity.js';
 import { AirforceProvider } from './airforce.js';
 import { DreamPromptingProvider } from './dreamprompting.js';
 import { WaterfallProvider } from './waterfall.js';
 import { LogfareProvider } from './logfare.js';
+import { BeatApiProvider } from './beatapi.js';
+import { ApinexProvider } from './apinex.js';
+import { OnomeoProvider } from './onomeo.js';
+import { IteraComputeProvider } from './iteracompute.js';
+import { SerpSearchProvider } from './serpsearch.js';
 
 const providers = new Map<Platform, BaseProvider>();
 
@@ -64,10 +79,20 @@ register(new SailProvider());
 register(new AclideProvider());
 register(new SpekaProvider());
 register(new TyphoonProvider());
+register(new PlugskyProvider());
+register(new InferbaseProvider());
+register(new SimpleLLMProvider());
 register(new LlmtrProvider());
 register(new GizmoProvider());
 register(new BlockRunProvider());
 register(new MoondreamProvider());
+register(new BeatApiProvider());
+register(new ApinexProvider());
+register(new OnomeoProvider());
+// IteraCompute (#1649): free OpenAI-compatible gateway, one account-wide
+// monthly token allowance; no free credential probe (see adapter docs).
+register(new IteraComputeProvider());
+register(new SerpSearchProvider());
 
 // Free-plan grants are shared wallets, not free credits per model. Eligibility
 // and tested model rows belong in Oracle, never in bundled DB migrations.
@@ -80,6 +105,7 @@ register(new Router9Provider());
 register(new SeptorProvider());
 register(new ClodProvider());
 register(new SpeechifyProvider());
+register(new FreeAiProvider());
 register(new BlazeProvider());
 // Five more OpenAI-compatible gateways. Each pins the response model to the
 // requested route (502 on substitution); rows stay in the hosted catalog.
@@ -181,17 +207,24 @@ register(new OpenAICompatProvider({
   },
 }));
 
-// GitHub Models — OpenAI-compatible. Catalog uses `<publisher>/<model>` ids
-// (e.g. `openai/gpt-4.1`); the old Azure endpoint rejects that prefix with
-// "Unknown model", so route to the current models.github.ai endpoint.
-register(new OpenAICompatProvider({
-  platform: 'github',
-  name: 'GitHub Models',
-  baseUrl: 'https://models.github.ai/inference',
-}));
+// GitHub Models was retired upstream on 30 July 2026 (#549): models.github.ai
+// now answers every request with 200 "OK" in plain text, so a registered
+// adapter only produced fake-healthy keys and broken streams (#1557). The
+// provider is gone; migration 20261017_000002 removes leftover rows.
 
 // Cohere - OpenAI-compatible via Cohere compatibility endpoint
 register(new CohereProvider());
+// Web search APIs (#1174). They serve /v1/search and the agents' web_search
+// tools, never chat (see providers/search-only.ts); they are registered so
+// their keys can be added and health-checked like every platform.
+register(new TavilyProvider());
+register(new ExaProvider());
+register(new FirecrawlProvider());
+register(new LinkupProvider());
+// Keyless: anonymous Search MCP by default, REST API with a real key.
+register(new ParallelProvider());
+// Keyless: public endpoint by default, the keyed endpoint with a real key.
+register(new KeenableProvider());
 
 // Cloudflare Workers AI - OpenAI-compatible endpoint (key = "account_id:token")
 register(new CloudflareProvider());
@@ -516,8 +549,10 @@ register(new OpenAICompatProvider({
 }));
 
 // ModelScope (魔搭社区, Alibaba) — OpenAI-compatible inference API
-// (api-inference.modelscope.cn/v1, Bearer auth). Free tier: 2000 requests/day
-// account-wide. Token from modelscope.cn/my/myaccesstoken, BUT calls only work
+// (api-inference.modelscope.cn/v1, Bearer auth). Free tier moved to magic-grain
+// (魔粒) metering in 2026-08: ~250 魔粒/day account-wide at ~2 魔粒 per request
+// (observed 2026-08-14) ≈ 125 requests/day. Token from
+// modelscope.cn/my/myaccesstoken, BUT calls only work
 // after binding the ModelScope account to an Alibaba Cloud CHINA-site (cn)
 // account with Chinese real-name verification — unbound tokens 401 on every
 // call ("please bind your alibaba cloud account before use"). Dedicated

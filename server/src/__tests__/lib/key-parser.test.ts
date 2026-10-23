@@ -28,6 +28,17 @@ describe('key parser', () => {
     ]);
   });
 
+  it('drops a leading export from shell-style dotenv lines', () => {
+    expect(parseDotEnv('export GROQ_API_KEY=gsk-test\nexport\tGOOGLE_API_KEY="ai-test" # primary')).toEqual([
+      { key: 'GROQ_API_KEY', value: 'gsk-test' },
+      { key: 'GOOGLE_API_KEY', value: 'ai-test' },
+    ]);
+    const result = parseKeysFromFile('export GROQ_API_KEY=gsk_test1234567890', '.env');
+    expect(result.keys).toEqual([
+      expect.objectContaining({ rawKey: 'GROQ_API_KEY=gsk_test1234567890', platform: 'groq' }),
+    ]);
+  });
+
   it('keeps a # that is inside the quotes', () => {
     expect(parseDotEnv('NVIDIA_API_KEY="nv # test"')).toEqual([
       { key: 'NVIDIA_API_KEY', value: 'nv # test' },
@@ -185,6 +196,23 @@ describe('key parser', () => {
     expect(parseCsv(csv)).toEqual([
       { key: 'GOOGLE_KEY', value: 'AIza-test', platform: 'google', label: 'Google Key' },
       { key: 'GROQ_KEY', value: 'gsk-test', platform: 'groq', label: 'Groq Key' },
+    ]);
+  });
+
+  it('parses newlines inside quoted CSV fields', () => {
+    const csv = 'platform,key,label,base_url\n"groq","gsk-test","work\nprimary",""\n';
+    expect(parseCsv(csv)).toEqual([
+      { key: 'GROQ_KEY', value: 'gsk-test', platform: 'groq', label: 'work\nprimary' },
+    ]);
+  });
+
+  it('parses multiline and normal CSV records with CRLF line endings', () => {
+    const csv = 'platform,key,label,base_url\r\n' +
+      '"groq","gsk-test","work\r\nprimary",""\r\n' +
+      '"google","AIza-test","Google Key",""\r\n';
+    expect(parseCsv(csv)).toEqual([
+      { key: 'GROQ_KEY', value: 'gsk-test', platform: 'groq', label: 'work\r\nprimary' },
+      { key: 'GOOGLE_KEY', value: 'AIza-test', platform: 'google', label: 'Google Key' },
     ]);
   });
 

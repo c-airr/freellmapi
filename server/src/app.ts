@@ -17,6 +17,8 @@ import { profilesRouter } from './routes/profiles.js';
 import { projectsRouter } from './routes/projects.js';
 import { embeddingsRouter } from './routes/embeddings.js';
 import { mediaRouter } from './routes/media.js';
+import { searchRouter } from './routes/search.js';
+import { decisionsRouter } from './routes/decisions.js';
 import { analyticsRouter } from './routes/analytics.js';
 import { healthRouter } from './routes/health.js';
 import { freeTierRouter } from './routes/free-tier.js';
@@ -33,7 +35,9 @@ import { geminiRouter } from './routes/gemini.js';
 import { ollamaRouter } from './routes/ollama.js';
 import { urlTokenRouter } from './routes/url-tokens.js';
 import { updateRouter } from './routes/update.js';
+import { moderationRouter } from './routes/moderation.js';
 import { requireAuth } from './middleware/requireAuth.js';
+import { createHostGuard } from './middleware/allowed-hosts.js';
 import { createProxyRateLimiter, createAdminRateLimiter } from './middleware/rateLimit.js';
 
 // Password-guess ceiling for GET /api/keys/export. Deliberately low: a real
@@ -103,6 +107,13 @@ export function createApp(config?: Config) {
   // /CIDRs trusts only those proxies. Must be set before client-context and
   // the rate-limit middleware, which both resolve the client IP.
   app.set('trust proxy', cfg.trustProxy);
+  // DNS-rebinding guard (#1637), first middleware so a rebinding request is
+  // rejected before helmet, CORS, body parsing, auth or routing. Opt-in: off
+  // until ALLOWED_HOSTS lists a hostname, then loopback + those names pass
+  // ('*' keeps it off). Must sit
+  // above everything below — its whole value is answering before any state or
+  // credential is touched.
+  app.use(createHostGuard(cfg.allowedHosts));
   const allowedCorsOrigins = new Set([
     ...DEFAULT_DASHBOARD_ORIGINS,
     ...cfg.dashboardOrigins,
@@ -259,6 +270,8 @@ export function createApp(config?: Config) {
   app.use('/api/fallback', requireAuth, fallbackRouter);
   app.use('/api/embeddings', requireAuth, embeddingsRouter);
   app.use('/api/media', requireAuth, mediaRouter);
+  app.use('/api/search', requireAuth, searchRouter);
+  app.use('/api/decisions', requireAuth, decisionsRouter);
   app.use('/api/analytics', requireAuth, analyticsRouter);
   app.use('/api/health', requireAuth, healthRouter);
   app.use('/api/free-tier', requireAuth, freeTierRouter);
@@ -304,6 +317,8 @@ export function createApp(config?: Config) {
   // paths it doesn't own fall through to the OpenAI router untouched.
   app.use('/v1', anthropicRouter);
   app.use('/v1', proxyRouter);
+  // OpenAI Moderation API shim (POST /v1/moderations)
+  app.use('/v1', moderationRouter);
   // OpenAI Responses API shim (Codex CLI requires wire_api="responses"; see #96)
   app.use('/v1', responsesRouter);
 

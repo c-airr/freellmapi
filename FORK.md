@@ -35,6 +35,48 @@ z `client/index.html` i wpina zakładki w menu.
 - `LOGIN_MAX_ATTEMPTS` w `.env`: liczba błędnych logowań przed 15-minutową blokadą
   (domyślnie 5, `0` wyłącza blokadę, tylko dla instalacji dostępnej z sieci prywatnej).
 
+## Darmowe modele OpenCode (zen-proxy)
+
+OpenCode udostępnia za darmo kilka modeli (teraz m.in. `deepseek-v4.1-flash-free`,
+`glm-5.3-flash-free`, `mimo-v2.6-flash-free`, `big-pickle`). Od 2026-09 odpowiadają
+jednak tylko klientowi OpenCode: każdy inny dostaje `403 FreeTierError`, dlatego
+wbudowany dostawca „OpenCode Zen” ma te modele wyłączone. Projekty społeczności,
+takie jak [12errh/zen-proxy](https://github.com/12errh/zen-proxy), udają przed
+OpenCode sesję OpenCode i wystawiają te modele jako zwykłe API OpenAI. Fork
+uruchamia takie proxy obok serwera i podpina je jako własny endpoint (Custom).
+
+Włączenie (Docker):
+
+```bash
+echo 'OPENCODE_PROXY_URL=http://zen-proxy:8787/v1' >> .env
+docker compose --profile opencode up -d --build
+```
+
+Przy starcie serwer sam dodaje endpoint „OpenCode Free (zen-proxy)” z kluczem `public`
+i rejestruje wszystkie modele, które proxy zwraca z `/v1/models` (proxy pokazuje tylko
+darmowe i co godzinę sprawdza, które z nich faktycznie działają). Jeśli proxy jeszcze
+się uruchamia, serwer próbuje ponownie co 30 s, maksymalnie 10 razy. Nowe modele
+dochodzą później przez codzienną synchronizację custom endpointów. Wyłączone w panelu
+modele, usunięte modele i wyłączony klucz endpointu zostają tak, jak je ustawisz.
+Modele wpisujesz do łańcucha jak każde inne.
+
+Bez Dockera uruchom proxy samodzielnie (`node zen-proxy.mjs`, słucha na
+`127.0.0.1:8787`) i ustaw `OPENCODE_PROXY_URL=http://127.0.0.1:8787/v1`. Pozostałe
+zmienne (`OPENCODE_PROXY_KEY`, `OPENCODE_PROXY_LABEL`, `OPENCODE_ZEN_KEY`) są opisane
+w `.env.example`. Kod: `server/src/services/opencode-free.ts`, obraz proxy:
+`docker/zen-proxy/Dockerfile` (przypięty do konkretnego commita, aktualizacja przez
+zmianę `ZEN_PROXY_REF`).
+
+Uwagi:
+
+- To obejście blokady OpenCode, a nie oficjalny dostęp. Regulamin OpenCode tego nie
+  przewiduje. OpenCode może to w każdej chwili zablokować albo zmienić listę modeli.
+  Prompty w darmowym planie mogą służyć do trenowania modeli. Nie wysyłaj tam niczego
+  poufnego.
+- Darmowy plan ma limity na IP i bywa przeciążony. Gdy model odpowie 429/5xx, proxy
+  samo przełącza się na inny darmowy model (nagłówek `x-zen-served-by`), więc
+  statystyki w panelu mogą przypisać odpowiedź do modelu, o który pytałeś.
+
 ## Wdrożenie
 
 Obraz buduje `.github/workflows/docker.yml` przy każdym pushu na `main`:
