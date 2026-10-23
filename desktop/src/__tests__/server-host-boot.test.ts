@@ -84,6 +84,13 @@ vi.mock('../../../server/src/services/custom-model-sync.js', () => ({
   }),
 }));
 
+vi.mock('../../../server/src/services/opencode-free.js', () => ({
+  startOpenCodeProxy: vi.fn(() => {
+    calls.push('startOpenCodeProxy');
+    return null;
+  }),
+}));
+
 vi.mock('../../../server/src/services/builtin-model-discovery.js', () => ({
   startBuiltinModelDiscovery: vi.fn(() => {
     calls.push('startBuiltinModelDiscovery');
@@ -183,6 +190,7 @@ describe('desktop server boot sequence (#949)', () => {
       'startModelProbe',
       'startBackupScheduler',
       'startCustomModelSync',
+      'startOpenCodeProxy',
       'startBuiltinModelDiscovery',
       'startWakeDetect',
     ]);
