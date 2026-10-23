@@ -155,7 +155,8 @@ export function LiquidComposer({
             placeholder={placeholder}
             rows={1}
             className={`block min-h-[32px] w-full resize-none bg-transparent px-1 py-1.5 text-sm outline-none placeholder:text-muted-foreground transition-opacity ${recording ? 'opacity-0' : ''}`}
-            style={{ height: 'auto', overflow: 'hidden' }}
+            // Fork: 'auto', not 'hidden' — past COMPOSER_MAX_HEIGHT_PX a big paste must scroll.
+            style={{ height: 'auto', overflowY: 'auto' }}
             onInput={e => {
               const el = e.target as HTMLTextAreaElement
               el.style.height = 'auto'

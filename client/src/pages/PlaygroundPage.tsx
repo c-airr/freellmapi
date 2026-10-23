@@ -1129,7 +1129,10 @@ export default function PlaygroundPage() {
                               </ArtifactHostContext.Provider>
                             </>
                           ) : (
-                            <div className="whitespace-pre-wrap">{msg.content}</div>
+                            // Fork: long unbroken lines (pasted JSON) used to push the bubble
+                            // off-screen, and a huge paste filled the whole view; wrap anywhere
+                            // and scroll inside the bubble instead.
+                            <div className="max-h-96 overflow-y-auto whitespace-pre-wrap wrap-anywhere">{msg.content}</div>
                           )}
                           {msg.meta && (
                             <div className="flex items-center gap-2 mt-2 flex-wrap text-[11px] opacity-70 tabular-nums">
