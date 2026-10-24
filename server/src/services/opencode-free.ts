@@ -31,6 +31,10 @@ const DEFAULT_LABEL = 'OpenCode Free (zen-proxy)';
 const DEFAULT_KEY = 'public';
 const RETRY_DELAY_MS = 30_000;
 const MAX_ATTEMPTS = 10;
+// Reading the sidecar's own verdict must stay far below the 30s model
+// discovery timeout: /api/status triggers a cheap upstream /models refresh,
+// never an agent-shaped chat probe, so it costs no chat quota.
+const PROXY_STATUS_TIMEOUT_MS = 15_000;
 
 export interface OpenCodeProxyConfig {
   baseUrl: string;
@@ -144,6 +148,7 @@ export function startOpenCodeProxy(db: Db, scheduler: Scheduler): (() => void) |
       } else {
         console.log(`[opencode-free] ${cfg.baseUrl}: no new models (${result.skipped} already known)`);
       }
+      await adviseOpenCodeProxyQuota(cfg);
     } catch (err: any) {
       const message = err?.message ?? String(err);
       if (attempt < MAX_ATTEMPTS) {
@@ -156,4 +161,83 @@ export function startOpenCodeProxy(db: Db, scheduler: Scheduler): (() => void) |
   };
   cancel = scheduler.after(0, run);
   return () => cancel?.();
+}
+
+// ── Anonymous-pool quota advisory (fork c-airr) ─────────────────────────────
+//
+// Since ~2026-10 the anonymous free pool answers every model with 429
+// FreeUsageLimitError ("Free usage limit reached. Subscribe to OpenCode Go…"),
+// even from IPs with no prior usage: OpenCode enforces the free limit per
+// account, workspace AND network, and shared/proxy IPs trip it. No header or
+// User-Agent trick bypasses that — it is server-side quota, not the
+// app-identity gate the sidecar already passes (that one is a 403
+// FreeTierError, which the proxy's session/UA/tool shaping handles).
+//
+// The proxy still lists the catalog (GET /models is cheap and unaffected), so
+// a successful registration says nothing about the pool being alive. The proxy
+// exposes its own reachability verdict at GET <proxy-root>/api/status (open
+// when PROXY_KEY is unset): sync.working/rateLimited are the models that
+// answered agent-shaped probes. Reading it costs no chat quota, so after a
+// successful sync we peek at it and log one actionable line when the pool
+// looks dead — instead of leaving the operator with models that fail every
+// request. Anything unexpected (proxy down, a non-zen-proxy URL, a shape
+// change upstream) is silently ignored: this is diagnostics, never a verdict,
+// and it must not fail or delay the boot sync.
+
+export interface OpenCodeProxyQuota {
+  /** A full probe cycle ran and classified every known model. */
+  settled: boolean;
+  /** Models that answered probes (rate-limited ones are alive, just capped). */
+  reachable: string[];
+  /** Models going nowhere (flaky + gate-blocked + dead). */
+  stalled: string[];
+}
+
+/** Best-effort read of the sidecar's own verdict. Null when unknown. */
+export async function openCodeProxyQuota(cfg: OpenCodeProxyConfig): Promise<OpenCodeProxyQuota | null> {
+  const root = cfg.baseUrl.replace(/\/v1\/?$/, '');
+  let res: Response;
+  try {
+    res = await fetch(`${root}/api/status`, { signal: AbortSignal.timeout(PROXY_STATUS_TIMEOUT_MS) });
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  let json: any;
+  try {
+    json = await res.json();
+  } catch {
+    return null;
+  }
+  const sync = json?.sync;
+  if (!sync || typeof sync !== 'object' || !Array.isArray(sync.working)) return null;
+  const list = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  return {
+    settled: sync.ok === true,
+    reachable: [...list(sync.working), ...list(sync.rateLimited)],
+    stalled: [...list(sync.flaky), ...list(sync.gated), ...list(sync.dead)],
+  };
+}
+
+/**
+ * Log one actionable line when the sidecar reports a dead pool. Never throws
+ * and never touches the DB — the registered models stay put and recover on
+ * their own when quota returns.
+ */
+export async function adviseOpenCodeProxyQuota(cfg: OpenCodeProxyConfig): Promise<void> {
+  let quota: OpenCodeProxyQuota | null = null;
+  try {
+    quota = await openCodeProxyQuota(cfg);
+  } catch {
+    return;
+  }
+  if (!quota || !quota.settled || quota.reachable.length > 0 || quota.stalled.length === 0) return;
+  const anonymous = cfg.apiKey === DEFAULT_KEY;
+  const remedy = anonymous
+    ? 'the shared anonymous pool looks exhausted (upstream answers 429 FreeUsageLimitError). Registered models stay and will work again when quota returns. For your own quota: create a free key at https://opencode.ai/auth and put it in the dashboard custom key for this endpoint (Keys → Custom), or set OPENCODE_ZEN_KEY for the whole sidecar. Reliable access needs OpenCode Go (https://opencode.ai/go).'
+    : 'the pool reports nothing reachable even with your own key — its quota is exhausted too, or the key is invalid. Check the key at https://opencode.ai/auth.';
+  console.warn(
+    `[opencode-free] ${cfg.baseUrl}: proxy reports 0 of ${quota.stalled.length} model(s) reachable — ${remedy}`,
+  );
 }
