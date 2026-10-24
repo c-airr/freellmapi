@@ -10,6 +10,9 @@
 //  - zolty "~" = NAUCZONE: model oddal 429, wiec tyle tokenow zjadl tego dnia
 //              do bledu (max z 30 dni, /api/projects/learned-limits).
 // Pasek przy liczbie: pelny = oficjalne, kreskowany = szacunek (skala log).
+// Nad lista: suma per dostawca (tylko platformy z kluczem); modele ze wspolnej
+// puli konta/IP licza sie raz. Nie pule z /api/free-tier: tam Groq i Google sa
+// jedna pula na konto, choc ich limity tokenow sa per model.
 //
 // Wspolne funkcje (api, fmt, esc): wspolne.js.
 (function () {
@@ -120,6 +123,36 @@
     };
   }
 
+  /**
+   * Suma per dostawca: limity per model sie sumuja, z puli wspolnej (w.wspolny)
+   * bierzemy jeden, najwiekszy model.
+   * Kolor sumy = najmniej pewny skladnik: oficjalna tylko gdy wszystkie sa oficjalne.
+   */
+  function dostawcy(wiersze, klucze) {
+    const wynik = new Map();
+    for (const w of wiersze) {
+      let d = wynik.get(w.platforma);
+      if (!d) wynik.set(w.platforma, (d = { platforma: w.platforma, modele: 0, bezDanych: 0, klucze: 0, pule: new Map() }));
+      d.modele += 1;
+      d.klucze = klucze.get(w.platforma) ?? 1;
+      if (w.dzien == null) { d.bezDanych += 1; continue; }
+      const klucz = w.wspolny ? 'wspolna' : w.modelId;
+      const naj = d.pule.get(klucz);
+      if (!naj || w.dzien > naj.dzien) d.pule.set(klucz, w);
+    }
+    return [...wynik.values()].map((d) => {
+      const czesci = [...d.pule.values()];
+      const rodzaje = new Set(czesci.map(rodzaj));
+      const dzien = czesci.length ? czesci.reduce((s, w) => s + w.dzien, 0) : null;
+      return {
+        ...d,
+        dzien,
+        wspolne: d.modele - d.bezDanych - czesci.length,
+        rodzaj: rodzaje.has('nieof') ? 'nieof' : rodzaje.has('nauk') ? 'nauk' : 'ofic',
+      };
+    }).sort((a, b) => (b.dzien ?? -1) - (a.dzien ?? -1) || a.platforma.localeCompare(b.platforma));
+  }
+
   async function zaladuj() {
     const [tu, modele, by30, cfg, nauk] = await Promise.all([
       api('/api/fallback/token-usage'),
@@ -143,7 +176,8 @@
     // Od najlepszego (najnizszy rank FreeLLMAPI) do najslabszego;
     // przy remisie wiekszy budzet wyzej.
     wiersze.sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999) || (b.dzien ?? -1) - (a.dzien ?? -1));
-    return { wiersze, srednia: sr.ogolna, cfg };
+    const klucze = new Map(modele.map((m) => [m.platform, Math.max(1, m.keyCount ?? 1)]));
+    return { wiersze, dostawcy: dostawcy(wiersze, klucze), srednia: sr.ogolna, cfg };
   }
 
   // ---------- render ----------
@@ -157,11 +191,32 @@
 
   const rodzaj = (w) => (w.oficjalne ? 'ofic' : w.nauczone ? 'nauk' : 'nieof');
 
-  function liczba(w, wartosc) {
+  function liczba(w, wartosc, r = rodzaj(w)) {
     if (wartosc == null) return '<span class="zk-szary">—</span>';
-    return w.oficjalne
+    return r === 'ofic'
       ? `<span class="zk-ofic">${fmt(wartosc)}</span>`
-      : `<span class="zk-${rodzaj(w)}">~${fmt(wartosc)}</span>`;
+      : `<span class="zk-${r}">~${fmt(wartosc)}</span>`;
+  }
+
+  function dostawca(d, szer, wybrany) {
+    const opis = [
+      modeli(d.modele),
+      d.wspolne > 0 ? `${d.wspolne} we wspólnej puli` : '',
+      d.bezDanych ? `${d.bezDanych} bez danych` : '',
+      d.klucze > 1 ? `${d.klucze} klucze` : '',
+    ].filter(Boolean).join(', ');
+    return `
+      <li><button type="button" class="zk-dost" data-p="${esc(d.platforma)}" aria-pressed="${wybrany}">
+        <span class="zk-dost-nazwa">${esc(d.platforma)}</span>
+        <span class="zk-dost-liczba">${d.dzien != null ? `${liczba(null, d.dzien, d.rodzaj)}<small> tok./dzień</small>` : '<small>limit nieopublikowany</small>'}</span>
+        <span class="zk-dost-pasek" aria-hidden="true">${d.dzien != null ? `<i class="${d.rodzaj}" style="width:${szer(d.dzien).toFixed(1)}%"></i>` : ''}</span>
+        <span class="zk-pod">${d.dzien != null ? `${liczba(null, d.dzien * DNI, d.rodzaj)} / mies., ` : ''}${esc(opis)}</span>
+      </button></li>`;
+  }
+
+  function listaDostawcow(el, dane, wybrany) {
+    const szer = skala(Math.max(...dane.dostawcy.map((d) => d.dzien ?? 0)));
+    el.querySelector('.zk-dostawcy').innerHTML = dane.dostawcy.map((d) => dostawca(d, szer, d.platforma === wybrany)).join('');
   }
 
   function wiersz(w, i, szer) {
@@ -192,25 +247,24 @@
       </tr>`;
   }
 
-  function tabela(el, dane, szukaj) {
+  function tabela(el, dane, szukaj, wybrany) {
     const q = szukaj.trim().toLowerCase();
-    const widoczne = q
-      ? dane.wiersze.filter((w) => `${w.nazwa} ${w.platforma} ${w.modelId}`.toLowerCase().includes(q))
-      : dane.wiersze;
+    const widoczne = dane.wiersze.filter((w) => (!wybrany || w.platforma === wybrany)
+      && (!q || `${w.nazwa} ${w.platforma} ${w.modelId}`.toLowerCase().includes(q)));
     const szer = skala(Math.max(...dane.wiersze.map((w) => w.dzien ?? 0)));
     // Numeracja = miejsce w rankingu calej listy, takze przy filtrze.
     const miejsce = new Map(dane.wiersze.map((w, i) => [w, i]));
     el.querySelector('tbody').innerHTML = widoczne.length
       ? widoczne.map((w) => wiersz(w, miejsce.get(w), szer)).join('')
-      : `<tr><td colspan="6" class="zk-pusto">Żaden model nie pasuje do „${esc(szukaj)}”.</td></tr>`;
-    el.querySelector('.zk-ile').textContent = q ? `${widoczne.length} z ${dane.wiersze.length} modeli` : `${dane.wiersze.length} modeli`;
+      : `<tr><td colspan="6" class="zk-pusto">Żaden model${wybrany ? ` ${esc(wybrany)}` : ''} nie pasuje do „${esc(szukaj)}”.</td></tr>`;
+    el.querySelector('.zk-ile').textContent = q || wybrany ? `${widoczne.length} z ${dane.wiersze.length} modeli` : `${dane.wiersze.length} modeli`;
   }
 
   async function zkBudzet(el) {
     el.innerHTML = `
       <div class="zk-glowa">
         <h1 class="text-2xl font-semibold tracking-tight">Budżet</h1>
-        <p class="text-sm text-muted-foreground mt-1">Ile tokenów dziennie i miesięcznie daje każdy model, od najmądrzejszego. Zwykłe liczby publikuje dostawca, pomarańczowe z tyldą to szacunki, żółte to realne limity nauczone z błędów 429.</p>
+        <p class="text-sm text-muted-foreground mt-1">Ile tokenów dziennie i miesięcznie daje każdy dostawca, u którego masz klucz, a niżej każdy model, od najmądrzejszego. Zwykłe liczby publikuje dostawca, pomarańczowe z tyldą to szacunki, żółte to realne limity nauczone z błędów 429.</p>
       </div>
       <p class="zk-szary">Ładuję…</p>`;
     let dane;
@@ -226,7 +280,14 @@
     const linki = Object.entries(dane.cfg.oficjalne ?? {})
       .map(([p, o]) => `<a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(p)}</a>`)
       .join(', ');
+    const razem = dane.dostawcy.reduce((s, d) => s + (d.dzien ?? 0), 0);
+    const razemRodzaj = dane.dostawcy.every((d) => d.rodzaj === 'ofic') ? 'ofic' : 'nieof';
     el.lastElementChild.outerHTML = `
+      <section class="zk-sekcja" aria-labelledby="zk-dost-tytul">
+        <h2 id="zk-dost-tytul" class="zk-h2">Dostawcy <span class="zk-pod">razem ${liczba(null, razem, razemRodzaj)} tok./dzień, kliknij dostawcę, żeby zawęzić listę modeli</span></h2>
+        <ul class="zk-dostawcy"></ul>
+      </section>
+      <h2 class="zk-h2">Modele</h2>
       <div class="zk-pasek-narzedzi">
         <input class="zk-szukaj" type="search" placeholder="Szukaj modelu albo dostawcy" aria-label="Szukaj modelu albo dostawcy" autocomplete="off" spellcheck="false">
         <span class="zk-ile zk-szary"></span>
@@ -248,8 +309,17 @@
         Oficjalne źródła ustawiasz w <code>config.json</code> zakładek (klucz „oficjalne”), patrz FORK.md.</p>`;
 
     const pole = el.querySelector('.zk-szukaj');
-    pole.addEventListener('input', () => tabela(el, dane, pole.value));
-    tabela(el, dane, '');
+    let wybrany = null;
+    const odswiez = () => { listaDostawcow(el, dane, wybrany); tabela(el, dane, pole.value, wybrany); };
+    pole.addEventListener('input', () => tabela(el, dane, pole.value, wybrany));
+    el.querySelector('.zk-dostawcy').addEventListener('click', (e) => {
+      const b = e.target.closest('.zk-dost');
+      if (!b) return;
+      wybrany = wybrany === b.dataset.p ? null : b.dataset.p;
+      odswiez();
+      el.querySelector(`.zk-dost[data-p="${CSS.escape(b.dataset.p)}"]`).focus();
+    });
+    odswiez();
   }
 
   window.zkBudzet = zkBudzet;
