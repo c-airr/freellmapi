@@ -43,6 +43,15 @@ export function createBudzetRouter(clientDist: string) {
       return;
     }
     const db = getDb();
+    // ?lancuch=<nazwa>: modele lancucha, jak "auto:<nazwa>" (bez niego aktywny lancuch).
+    const nazwa = typeof req.query.lancuch === 'string' ? req.query.lancuch.trim() : '';
+    const profil = nazwa
+      ? db.prepare('SELECT id FROM profiles WHERE LOWER(name) = ?').get(nazwa.toLowerCase()) as { id: number } | undefined
+      : undefined;
+    if (nazwa && !profil) {
+      res.status(404).json({ error: { message: `Unknown chain: ${nazwa}`, type: 'not_found' } });
+      return;
+    }
     const oficjalne = wczytajOficjalne(clientDist);
     const nauczone = new Map(learnedLimits().map((n) => [`${n.platform}|${n.modelId}`, n]));
 
@@ -66,7 +75,7 @@ export function createBudzetRouter(clientDist: string) {
     `).all() as { platform: string; modelId: string; zapytania: number; tokeny: number }[];
     const dzisModelu = new Map(dzis.map((r) => [`${r.platform}|${r.modelId}`, r]));
 
-    const modele = chainModelBudgets().filter((m) => m.enabled).map((m) => {
+    const modele = chainModelBudgets(profil?.id).filter((m) => m.enabled).map((m) => {
       const klucz = `${m.platform}|${m.modelId}`;
       const pola = new Set(oficjalne[m.platform]?.pola ?? []);
       const opis = m.monthlyTokenBudget ?? '';
@@ -126,6 +135,7 @@ export function createBudzetRouter(clientDist: string) {
     const polnoc = new Date();
     polnoc.setUTCHours(24, 0, 0, 0);
     res.json({
+      lancuch: nazwa || null,
       resetAt: polnoc.toISOString(),
       dostawcy: [...dostawcy.values()].map((d) => {
         const pule = [...d.pule.values()];

@@ -461,9 +461,10 @@ fallbackRouter.post('/sort/:preset', (req: Request, res: Response) => {
 /**
  * The enabled models of the active chain (profile or default fallback order) on
  * platforms with a key, smartest first, with their monthly budget and windowed
- * limits. Shared by /token-usage and the fork's /v1/budzet.
+ * limits. Shared by /token-usage and the fork's /v1/budzet. `profileId` (fork) reads
+ * that chain instead of the active one, as `auto:<name>` routes it.
  */
-export function chainModelBudgets() {
+export function chainModelBudgets(profileId?: number) {
   const db = getDb();
 
   // Get platforms that have enabled keys
@@ -479,9 +480,11 @@ export function chainModelBudgets() {
   const activeProfileId = settingRow ? (parseInt(settingRow.value) || null) : null;
 
   // Verify active profile still exists
-  const activeProfile = activeProfileId
-    ? db.prepare('SELECT id FROM profiles WHERE id = ?').get(activeProfileId) as any
-    : null;
+  const activeProfile = profileId !== undefined
+    ? { id: profileId }
+    : activeProfileId
+      ? db.prepare('SELECT id FROM profiles WHERE id = ?').get(activeProfileId) as any
+      : null;
 
   // Ordered by intelligence (rank 1 = smartest), not chain priority: the
   // dashboard's monthly-budget bar and legend follow this order, and chain
@@ -499,7 +502,7 @@ export function chainModelBudgets() {
       JOIN models m ON m.id = pm.model_db_id
       WHERE pm.profile_id = ? AND m.enabled = 1
       ORDER BY m.intelligence_rank ASC, pm.priority ASC
-    `).all(activeProfileId) as any[];
+    `).all(activeProfile.id) as any[];
   } else {
     // Default mode: use fallback_config (only include enabled models)
     rawModels = db.prepare(`

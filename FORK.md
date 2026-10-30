@@ -32,7 +32,7 @@ z `client/index.html` i wpina zakładki w menu.
   wynik to maksimum z 30 dni (dolna granica limitu, dobija do prawdziwej, gdy limit się
   wyczerpie). 429 „per minute”, „concurrent” i przeciążenie Zhipu są pomijane. Zakładka
   Budżet pokazuje to na żółto zamiast pomarańczowego szacunku (oficjalne liczby wygrywają).
-- `GET /v1/budzet` (klucz API jak `/v1`): ile tokenów i zapytań zostało dziś (od północy UTC)
+- `GET /v1/budzet[?lancuch=nazwa]` (klucz API jak `/v1`): ile tokenów i zapytań zostało dziś (od północy UTC)
   per model i per dostawca. Dzienny limit liczony jak w zakładce Budżet (kopia logiki z
   `budzet.js`, zmiana tam = zmiana w `server/src/routes/budzet.ts`). Czyta go OpenBot.
 - `LOGIN_MAX_ATTEMPTS` w `.env`: liczba błędnych logowań przed 15-minutową blokadą

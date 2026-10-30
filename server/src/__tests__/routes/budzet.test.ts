@@ -26,6 +26,11 @@ describe('GET /v1/budzet', () => {
     key = getUnifiedApiKey();
   });
 
+  it('answers 404 for an unknown chain', async () => {
+    const { status } = await get(app, '/v1/budzet?lancuch=nie-ma-takiego', { Authorization: `Bearer ${key}` });
+    expect(status).toBe(404);
+  });
+
   it('rejects a missing key with 401', async () => {
     const { status } = await get(app, '/v1/budzet');
     expect(status).toBe(401);
@@ -60,5 +65,16 @@ describe('GET /v1/budzet', () => {
     expect(groq.tokenyDzis).toBeGreaterThanOrEqual(1500);
     expect(groq.tokenyZostalo).toBeLessThanOrEqual(groq.tokenyDzien);
     expect(Date.parse(body.resetAt)).toBeGreaterThan(Date.now());
+  });
+
+  it('reads the models of a chain by name, as auto:<name> routes it', async () => {
+    const db = getDb();
+    const profile = db.prepare("INSERT INTO profiles (name) VALUES ('Code')").run().lastInsertRowid;
+    const model = db.prepare("SELECT id, model_id FROM models WHERE platform = 'groq' AND enabled = 1 LIMIT 1").get() as { id: number; model_id: string };
+    db.prepare('INSERT INTO profile_models (profile_id, model_db_id, priority, enabled) VALUES (?, ?, 1, 1)').run(profile, model.id);
+    const { status, body } = await get(app, '/v1/budzet?lancuch=code', { Authorization: `Bearer ${key}` });
+    expect(status).toBe(200);
+    expect(body.lancuch).toBe('code');
+    expect(body.modele.map((m: { modelId: string }) => m.modelId)).toEqual([model.model_id]);
   });
 });
