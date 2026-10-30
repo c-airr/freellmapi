@@ -295,8 +295,8 @@ projectsRouter.get('/usage', (req, res) => {
  * shortcut: UTC day, while providers reset at their own hour (Google: midnight
  * Pacific); upgrade with a per-provider reset time if the numbers look off.
  */
-projectsRouter.get('/learned-limits', (_req, res) => {
-  const rows = getDb().prepare(`
+export function learnedLimits() {
+  return getDb().prepare(`
     WITH hits AS (
       SELECT platform, model_id, date(created_at) AS day, MAX(id) AS last_id
       FROM requests
@@ -315,6 +315,9 @@ projectsRouter.get('/learned-limits', (_req, res) => {
     SELECT platform, model_id AS modelId, MAX(tokens) AS tokens, COUNT(*) AS days, MAX(day) AS lastDay
     FROM per_day WHERE tokens > 0
     GROUP BY platform, model_id
-  `).all(getSinceTimestamp('30d'));
-  res.json({ models: rows });
+  `).all(getSinceTimestamp('30d')) as { platform: string; modelId: string; tokens: number; days: number; lastDay: string }[];
+}
+
+projectsRouter.get('/learned-limits', (_req, res) => {
+  res.json({ models: learnedLimits() });
 });

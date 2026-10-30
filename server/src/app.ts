@@ -31,6 +31,7 @@ import { authRouter } from './routes/auth.js';
 import { docsRouter } from './routes/docs.js';
 import { mcpRouter } from './routes/mcp.js';
 import { statusRouter, providersRouter } from './routes/status.js';
+import { createBudzetRouter } from './routes/budzet.js';
 import { geminiRouter } from './routes/gemini.js';
 import { ollamaRouter } from './routes/ollama.js';
 import { urlTokenRouter } from './routes/url-tokens.js';
@@ -301,6 +302,8 @@ export function createApp(config?: Config) {
   // limiter (like docsRouter) so status polling doesn't draw down a caller's
   // request budget.
   app.use('/v1', providersRouter);
+  // Fork: GET /v1/budzet (ile zostalo dzis per model/dostawca, klucz API).
+  app.use('/v1', createBudzetRouter(cfg.clientDist ? path.resolve(cfg.clientDist) : path.resolve(__dirname, '../../client/dist')));
 
   // Separately revocable URL tokens for clients that cannot set headers.
   app.use('/v1/t/:token', createProxyRateLimiter(cfg.proxyRateLimitRpm));

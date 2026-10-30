@@ -458,8 +458,12 @@ fallbackRouter.post('/sort/:preset', (req: Request, res: Response) => {
   res.json({ success: true, preset });
 });
 
-// Token usage per model for the stacked bar
-fallbackRouter.get('/token-usage', (_req: Request, res: Response) => {
+/**
+ * The enabled models of the active chain (profile or default fallback order) on
+ * platforms with a key, smartest first, with their monthly budget and windowed
+ * limits. Shared by /token-usage and the fork's /v1/budzet.
+ */
+export function chainModelBudgets() {
   const db = getDb();
 
   // Get platforms that have enabled keys
@@ -541,9 +545,17 @@ fallbackRouter.get('/token-usage', (_req: Request, res: Response) => {
         rpdLimit: m.rpd_limit,
         tpmLimit: m.tpm_limit,
         tpdLimit: m.tpd_limit,
+        keyCount: keys,
+        monthlyTokenBudget: m.monthly_token_budget,
       };
     });
 
+  return modelBudgets;
+}
+
+// Token usage per model for the stacked bar
+fallbackRouter.get('/token-usage', (_req: Request, res: Response) => {
+  const modelBudgets = chainModelBudgets();
   // Total budget counts all models (both enabled and disabled — they contribute to the pool)
   const totalBudget = modelBudgets.reduce((s, m) => s + m.budget, 0);
   const totalUsed = modelBudgets.reduce((s, m) => s + m.used, 0);
