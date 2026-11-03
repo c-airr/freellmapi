@@ -256,21 +256,17 @@ describe('Migration idempotency', () => {
     ]);
   });
 
-  it('V24: Zen roster refresh lands and the hung NIM gemma is paused', () => {
+  it('V24: Zen roster refresh lands, then the OpenCode provider removal drops it', () => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
     const db = initDb(':memory:');
 
+    // V18-V25 seeded and then retired several OpenCode Zen promos; this fork
+    // unregisters the provider and 20261103_000001 removes every row of it, so
+    // nothing of the platform is left on a fresh DB.
     const zen = db.prepare(`
-      SELECT model_id, enabled, supports_tools FROM models
-       WHERE platform = 'opencode' AND model_id IN ('nemotron-3-ultra-free', 'minimax-m3-free')
-       ORDER BY model_id
-    `).all() as { model_id: string; enabled: number; supports_tools: number }[];
-    expect(zen.map(r => [r.model_id, r.enabled, r.supports_tools])).toEqual([
-      // minimax-m3-free was seeded enabled here in V24, then retired in V25 when
-      // its free promo ended (now enabled=0). nemotron-3-ultra-free is still live.
-      ['minimax-m3-free',       0, 1],
-      ['nemotron-3-ultra-free', 1, 1],
-    ]);
+      SELECT model_id FROM models WHERE platform = 'opencode'
+    `).all() as { model_id: string }[];
+    expect(zen).toEqual([]);
 
     // The hung NIM gemma route is paused (row kept, enabled=0, re-asserted
     // each boot like the V13 disables).
@@ -280,19 +276,19 @@ describe('Migration idempotency', () => {
     expect(gemma.enabled).toBe(0);
   });
 
-  it('V25: dead OpenCode Zen free promos (nemotron-3-super-free, minimax-m3-free) are disabled', () => {
+  it('V26: the OpenCode provider removal leaves no keys, models or chain rows', () => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
     const db = initDb(':memory:');
 
     const dead = db.prepare(`
-      SELECT model_id, enabled FROM models
-       WHERE platform = 'opencode' AND model_id IN ('nemotron-3-super-free', 'minimax-m3-free')
-       ORDER BY model_id
+      SELECT model_id, enabled FROM models WHERE platform = 'opencode'
     `).all() as { model_id: string; enabled: number }[];
-    expect(dead.map(r => [r.model_id, r.enabled])).toEqual([
-      ['minimax-m3-free',       0],
-      ['nemotron-3-super-free', 0],
-    ]);
+    expect(dead).toEqual([]);
+
+    const leftovers = db.prepare(`
+      SELECT COUNT(*) AS n FROM api_keys WHERE platform = 'opencode'
+    `).get() as { n: number };
+    expect(leftovers.n).toBe(0);
   });
 
   it('all enabled catalog platforms have a registered provider', async () => {

@@ -20,8 +20,7 @@ export function GetKeyLink({ url }: { url: string }) {
 }
 
 // `url` points to each provider's key-management / signup page so the Keys page
-// can show a "Get API key" shortcut (#137). OpenCode Zen's key is free from
-// opencode.ai/auth — no card needed; billing only applies to paid models (#128).
+// can show a "Get API key" shortcut (#137).
 // `keyless: true` providers (Kilo, OVH, AI Horde) need no API key but accept
 // one (#1331): the key field is optional, a blank submit stores a sentinel so
 // routing treats the platform as configured and calls go out anonymously, and
@@ -80,7 +79,6 @@ export const PLATFORMS: { value: Platform; label: string; url: string; keyless?:
   { value: 'ovh', label: 'OVH AI Endpoints (no key needed)', url: 'https://endpoints.ai.cloud.ovh.net', keyless: true },
   { value: 'llm7', label: 'LLM7 (anon ok)', url: 'https://llm7.io' },
   { value: 'huggingface', label: 'HuggingFace Router', url: 'https://huggingface.co/settings/tokens' },
-  { value: 'opencode', label: 'OpenCode Zen (paid models only)', url: 'https://opencode.ai/auth' },
   { value: 'agnes', label: 'Agnes AI (free key)', url: 'https://platform.agnes-ai.com' },
   { value: 'reka', label: 'Reka (prepaid credits)', url: 'https://platform.reka.ai' },
   { value: 'siliconflow', label: 'SiliconFlow (image + TTS)', url: 'https://siliconflow.com' },

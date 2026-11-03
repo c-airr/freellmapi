@@ -324,22 +324,12 @@ register(new OpenAICompatProvider({
   baseUrl: 'https://api.llm7.io/v1',
 }));
 
-// OpenCode Zen — OpenAI-compatible gateway (https://opencode.ai/zen/v1), same
-// adapter as Groq/OpenRouter. A handful of promotional models are free for a
-// limited time; they need a free account key from https://opencode.ai/auth
-// (no card required — billing only applies to paid models). The free roster is
-// trial-only and prompts/outputs may be used to improve the models, so we seed
-// just the docs-confirmed free IDs (migrateModelsV18) with conservative limits.
-// Since 2026-09 the free roster is locked to the OpenCode client (#1249): every
-// free model answers 403 FreeTierError "OpenCode's free tier can only be used
-// from within OpenCode" on a valid key, and sending the OpenCode client headers
-// (#1204, reverted) does not change that. The catalog disables the free rows;
-// the provider stays registered for keys on OpenCode's paid models.
-register(new OpenAICompatProvider({
-  platform: 'opencode',
-  name: 'OpenCode Zen',
-  baseUrl: 'https://opencode.ai/zen/v1',
-}));
+// OpenCode Zen was removed in this fork (2026-11-03). Since 2026-09 its free
+// roster is locked to the OpenCode client — every promotional model answers
+// 403 FreeTierError "OpenCode's free tier can only be used from within OpenCode"
+// — so the only thing left behind was paid billing on a second account. The
+// adapter is not registered, and migration 20261103_000001_remove_opencode_provider
+// deletes the keys, model rows and chain entries of installs that used it.
 
 // OVHcloud AI Endpoints — OpenAI-compatible. Two free modes: anonymous
 // (documented 2 req/min per IP per model — observed even stricter across

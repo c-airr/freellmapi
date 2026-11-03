@@ -164,9 +164,6 @@ export type Platform =
   | 'pollinations'
   | 'llm7'
   | 'huggingface'
-  // OpenCode Zen — OpenAI-compatible gateway. Free promotional models require a
-  // free (no-card) account key from opencode.ai/auth; see migrateModelsV18.
-  | 'opencode'
   // OVHcloud AI Endpoints — OpenAI-compatible, keyless anonymous tier
   // (2 req/min per IP per model); see migrateModelsV26.
   | 'ovh'
