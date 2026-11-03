@@ -67,3 +67,33 @@ git push                                          # Actions zbuduje nowy obraz
 
 Jeśli upstream doda migrację z późniejszą datą, kolejność się zgadza. Przy konflikcie
 w `server/src/db/migrate/defaults.ts` zostaw obie listy wpisów.
+
+## Usunięte providery
+
+**OpenCode Zen** — wyrejestrowany z `server/src/providers/index.ts`; migracja
+`20261103_000001_remove_opencode_provider` kasuje klucze, modele, wpisy łańcuchów
+i profile tej platformy. Sidecar `zen-proxy` (klucz Custom `http://zen-proxy:8787/v1`)
+zniknął wcześniej razem z `docker/zen-proxy/`. OpenCode jako *klient* (CLI
+`setup-opencode` w `cli/`) dalej działa i nie ma z tym nic wspólnego.
+
+## Modele NVIDIA NIM spoza katalogu
+
+Katalog freellmapi jest podpisany i kuratorowany, a NVIDIA jest „catalog-managed”,
+więc modeli z `build.nvidia.com`, których katalog nie zna, nie da się dociągnąć
+przyciskiem „Pobierz modele”. Dodaje się je jako wiersze operatorskie
+(`models.source = 'user'`) — katalog ich nie usuwa przy synchronizacji, bo pruning
+dotyczy tylko `source = 'catalog'`. Na masle dodane:
+
+| model_id | stan |
+|---|---|
+| `mistralai/mistral-large-4-1t-a52b` | włączony, pierwszy w łańcuchu |
+| `nvidia/nemotron-3.5-super-vl-120b-a12b` | włączony |
+| `stepfun-ai/step-5-preview` | włączony |
+| `z-ai/glm-5.3-flash` | włączony |
+| `minimaxai/minimax-m3.1-flash` | włączony |
+| `nvidia/nemotron-3.5-bolt-e4b` | włączony |
+| `deepseek-ai/deepseek-v4.1-flash` | wyłączony — pierwsze wywołanie ~220 s |
+
+Wszystkie na jednym kluczu `nvapi` (limit NIM: 40 RPM na model); `nvidia/nemotron-nano-3-30b-a3b`
+pominięty, bo endpoint zwraca 404 na tym koncie. Świeża instalacja odtwarza je przez
+panel **Klucze → Dodaj model** (platforma NVIDIA NIM) albo `POST /api/models`.
