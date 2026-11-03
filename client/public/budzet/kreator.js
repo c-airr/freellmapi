@@ -154,7 +154,7 @@ function wybraneWKolejnosci() {
   const wybrane = stan.modele.filter((m) => stan.zaznaczone.has(m.id));
   return stan.kolejnosc === 'klik'
     ? wybrane.sort((a, b) => stan.zaznaczone.get(a.id) - stan.zaznaczone.get(b.id))
-    : wybrane.sort((a, b) => (a.intelligenceRank ?? 999) - (b.intelligenceRank ?? 999));
+    : wybrane.sort((a, b) => porownajModele(a, b, stan.cfg));
 }
 
 function renderLista() {
@@ -325,7 +325,7 @@ async function main(moj) {
       : `<p class="blad">Nie udało się pobrać danych: ${esc(err.message)}</p>`;
     return;
   }
-  stan.modele.sort((a, b) => (a.intelligenceRank ?? 999) - (b.intelligenceRank ?? 999));
+  stan.modele.sort((a, b) => porownajModele(a, b, stan.cfg));
   // Klucz do /v1 tylko do ramki "Jak uzyc" — bez niego kreator dziala dalej.
   stan.apiKey = await api('/api/settings/api-key').then((r) => r.apiKey ?? null).catch(() => null);
 

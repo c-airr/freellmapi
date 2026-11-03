@@ -49,6 +49,24 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/** Indeks w openrouterPrefer (mniejszy = wyzszy priorytet w lancuchu). */
+function preferOpenRouter(model, cfg) {
+  if (model.platform !== 'openrouter') return Number.MAX_SAFE_INTEGER;
+  const key = `${model.platform}/${model.modelId}`.toLowerCase();
+  const list = cfg.openrouterPrefer ?? [];
+  for (let i = 0; i < list.length; i++) {
+    if (key.includes(String(list[i]).toLowerCase())) return i;
+  }
+  return list.length;
+}
+
+/** Sortowanie modeli w lancuchu: preferencje OpenRouter, potem intelligenceRank. */
+function porownajModele(a, b, cfg) {
+  const po = preferOpenRouter(a, cfg) - preferOpenRouter(b, cfg);
+  if (po) return po;
+  return (a.intelligenceRank ?? 999) - (b.intelligenceRank ?? 999);
+}
+
 function klasyfikuj(model, cfg) {
   const key = `${model.platform}/${model.modelId}`.toLowerCase();
   const has = (list) => (list ?? []).some((frag) => key.includes(String(frag).toLowerCase()));
@@ -111,6 +129,34 @@ async function mojeModele(cfg) {
  * (HTTPS albo localhost) — panel po tailnecie to zwykle HTTP, wiec fallback
  * przez ukryte textarea + execCommand.
  */
+const rodzajWiersza = (w) => (w.oficjalne ? 'ofic' : w.nauczone ? 'nauk' : 'nieof');
+
+/**
+ * Suma budzetu dziennego dla wlaczonych modeli lancucha (jak sekcja dostawcow).
+ * @param {Map<number, object>} poId wiersze z budzet.js po modelDbId
+ * @param {{model_db_id:number, enabled:number}[]} sklad z /api/profiles/:id/models
+ */
+function budzetLancucha(poId, sklad) {
+  const wiersze = sklad.filter((r) => r.enabled).map((r) => poId.get(r.model_db_id)).filter(Boolean);
+  if (!wiersze.length) return { modele: 0, dzien: null, rodzaj: 'nieof', bezDanych: sklad.filter((r) => r.enabled).length };
+  const pule = new Map();
+  let bezDanych = 0;
+  for (const w of wiersze) {
+    if (w.dzien == null) { bezDanych += 1; continue; }
+    const klucz = w.wspolny ? `${w.platforma}|wspolna` : `${w.platforma}|${w.modelId}`;
+    const naj = pule.get(klucz);
+    if (!naj || w.dzien > naj.dzien) pule.set(klucz, w);
+  }
+  const czesci = [...pule.values()];
+  const rodzaje = new Set(czesci.map(rodzajWiersza));
+  return {
+    modele: wiersze.length,
+    dzien: czesci.length ? czesci.reduce((s, w) => s + w.dzien, 0) : null,
+    rodzaj: rodzaje.has('nieof') ? 'nieof' : rodzaje.has('nauk') ? 'nauk' : 'ofic',
+    bezDanych,
+  };
+}
+
 async function kopiuj(tekst) {
   try {
     if (navigator.clipboard && window.isSecureContext) {

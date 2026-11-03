@@ -108,6 +108,7 @@
     }
 
     return {
+      modelDbId: m.modelDbId,
       nazwa: m.displayName || m.modelId,
       platforma: m.platform,
       modelId: m.modelId,
@@ -153,6 +154,52 @@
     }).sort((a, b) => (b.dzien ?? -1) - (a.dzien ?? -1) || a.platforma.localeCompare(b.platforma));
   }
 
+  async function wierszePoId(tu, modele, by30, cfg, nauk) {
+    const nauczone = new Map(nauk.models.map((n) => [`${n.platform}|${n.modelId}`, n]));
+    const katalog = new Map(modele.map((m) => [m.id, m]));
+    const sr = srednie(by30);
+    const budTu = new Map(tu.models.map((m) => [m.modelDbId, m.budget]));
+    const free = await api('/api/free-tier');
+    const platformy = new Set((free.pools ?? []).map((p) => p.platform));
+    const map = new Map();
+    for (const m of modele) {
+      if (!m.enabled || !platformy.has(m.platform)) continue;
+      const doPolicz = {
+        modelDbId: m.id,
+        platform: m.platform,
+        modelId: m.modelId,
+        displayName: m.displayName,
+        intelligenceRank: m.intelligenceRank,
+        rpdLimit: m.rpdLimit,
+        rpmLimit: m.rpmLimit,
+        tpmLimit: m.tpmLimit,
+        tpdLimit: m.tpdLimit,
+      };
+      const w = policz(doPolicz, katalog.get(m.id), budTu.get(m.id) ?? 0, sr, cfg, nauczone);
+      w.wspolny = wspolny(m);
+      map.set(m.id, w);
+    }
+    return map;
+  }
+
+  async function lancuchyBudzet(wierszeMap) {
+    const profile = await api('/api/profiles');
+    const lista = profile.filter((p) => p.type === 'custom' || p.type === 'default');
+    const rows = await Promise.all(lista.map(async (p) => {
+      const sklad = await api(`/api/profiles/${p.id}/models`);
+      const b = budzetLancucha(wierszeMap, sklad);
+      return {
+        id: p.id,
+        name: p.name,
+        emoji: p.emoji,
+        type: p.type,
+        endpoint: `auto:${p.name}`,
+        ...b,
+      };
+    }));
+    return rows.sort((a, b) => (b.dzien ?? -1) - (a.dzien ?? -1) || a.name.localeCompare(b.name));
+  }
+
   async function zaladuj() {
     const [tu, modele, by30, cfg, nauk] = await Promise.all([
       api('/api/fallback/token-usage'),
@@ -177,7 +224,9 @@
     // przy remisie wiekszy budzet wyzej.
     wiersze.sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999) || (b.dzien ?? -1) - (a.dzien ?? -1));
     const klucze = new Map(modele.map((m) => [m.platform, Math.max(1, m.keyCount ?? 1)]));
-    return { wiersze, dostawcy: dostawcy(wiersze, klucze), srednia: sr.ogolna, cfg };
+    const wierszeMap = await wierszePoId(tu, modele, by30, cfg, nauk);
+    const lancuchy = await lancuchyBudzet(wierszeMap);
+    return { wiersze, dostawcy: dostawcy(wiersze, klucze), lancuchy, srednia: sr.ogolna, cfg };
   }
 
   // ---------- render ----------
@@ -212,6 +261,29 @@
         <span class="zk-dost-pasek" aria-hidden="true">${d.dzien != null ? `<i class="${d.rodzaj}" style="width:${szer(d.dzien).toFixed(1)}%"></i>` : ''}</span>
         <span class="zk-pod">${d.dzien != null ? `${liczba(null, d.dzien * DNI, d.rodzaj)} / mies., ` : ''}${esc(opis)}</span>
       </button></li>`;
+  }
+
+  function lancuchySekcja(dane) {
+    if (!dane.lancuchy?.length) {
+      return '<p class="zk-szary">Brak łańcuchów — utwórz je w zakładce <a href="/lancuchy" data-idz="/lancuchy">Łańcuchy</a>.</p>';
+    }
+    const szer = skala(Math.max(...dane.lancuchy.map((l) => l.dzien ?? 0), 1));
+    return `<ul class="zk-lancuchy">${dane.lancuchy.map((l) => {
+      const opis = [
+        modeli(l.modele),
+        l.bezDanych ? `${l.bezDanych} bez danych budżetu` : '',
+        l.type === 'default' ? 'wbudowany' : '',
+      ].filter(Boolean).join(', ');
+      const liczba = l.dzien != null
+        ? `${l.rodzaj === 'ofic' ? `<span class="zk-ofic">${fmt(l.dzien)}</span>` : `<span class="zk-${l.rodzaj}">~${fmt(l.dzien)}</span>`}<small> tok./dzień</small>`
+        : '<small class="zk-szary">limit nieopublikowany</small>';
+      return `<li class="zk-lancuch">
+        <span class="zk-lancuch-nazwa">${l.emoji ? `${esc(l.emoji)} ` : ''}${esc(l.name)} <code>${esc(l.endpoint)}</code></span>
+        <span class="zk-lancuch-liczba">${liczba}</span>
+        <span class="zk-lancuch-pasek" aria-hidden="true">${l.dzien != null ? `<i class="${l.rodzaj}" style="width:${szer(l.dzien).toFixed(1)}%"></i>` : ''}</span>
+        <span class="zk-pod">${esc(opis)} — suma włączonych modeli łańcucha (wspólne pule liczone raz)</span>
+      </li>`;
+    }).join('')}</ul>`;
   }
 
   function listaDostawcow(el, dane, wybrany) {
@@ -305,6 +377,10 @@
           <tbody></tbody>
         </table>
       </div>
+      <section class="zk-sekcja zk-sekcja-lancuchy" aria-labelledby="zk-lanc-tytul">
+        <h2 id="zk-lanc-tytul" class="zk-h2">Łańcuchy <span class="zk-pod">ile tokenów dziennie daje skład każdego łańcucha (<code>auto:nazwa</code>)</span></h2>
+        ${lancuchySekcja(dane)}
+      </section>
       <p class="zk-pod zk-stopka">Miesiąc = ${DNI} × dzień. Średnia z Twoich logów: ~${fmt(dane.srednia)} tok. na udane zapytanie.
         Oficjalne źródła ustawiasz w <code>config.json</code> zakładek (klucz „oficjalne”), patrz FORK.md.</p>`;
 

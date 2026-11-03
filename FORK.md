@@ -11,7 +11,7 @@ są w menu pod hamburgerem.
 
 | Zakładka | Adres | Co robi |
 |---|---|---|
-| Budżet | `/budzet-modeli` | Modele od najmądrzejszego, tokeny na dzień i na miesiąc. Liczby z dokumentacji dostawcy są zwykłe, szacunki pomarańczowe z podanym źródłem, a żółte to realne limity nauczone z Twoich błędów 429. |
+| Budżet | `/budzet-modeli` | Modele od najmądrzejszego, tokeny na dzień i na miesiąc. Liczby z dokumentacji dostawcy są zwykłe, szacunki pomarańczowe z podanym źródłem, a żółte to realne limity nauczone z Twoich błędów 429. Na dole: suma budżetu każdego łańcucha (`auto:nazwa`). |
 | Łańcuchy | `/lancuchy` | Kreator łańcuchów (profili): nazwa + zaznaczone modele. Program wywołuje łańcuch przez `"model": "auto:nazwa"`. |
 | Projekty | `/projekty` | Projekt = łańcuchy jednego programu (np. bot Discorda, automatyzacje). Widać, ile ciągnie projekt, każdy łańcuch i które modele odpowiadały. |
 | Endpointy | `/endpointy` | Lista endpointów z opisem po polsku, czytana na żywo z `/v1/openapi.json`. |
@@ -38,79 +38,6 @@ z `client/index.html` i wpina zakładki w menu.
 - `LOGIN_MAX_ATTEMPTS` w `.env`: liczba błędnych logowań przed 15-minutową blokadą
   (domyślnie 5, `0` wyłącza blokadę, tylko dla instalacji dostępnej z sieci prywatnej).
 
-## Darmowe modele OpenCode (zen-proxy)
-
-OpenCode udostępnia za darmo kilka modeli (m.in. `deepseek-v4.1-flash-free`,
-`glm-5.3-flash-free`, `mimo-v2.6-flash-free`, `big-pickle`). Od 2026-09 odpowiadają
-jednak tylko klientowi OpenCode: każdy inny dostaje `403 FreeTierError`, dlatego
-wbudowany dostawca „OpenCode Zen” ma te modele wyłączone. Projekty społeczności,
-takie jak [12errh/zen-proxy](https://github.com/12errh/zen-proxy), udają przed
-OpenCode sesję OpenCode i wystawiają te modele jako zwykłe API OpenAI. Fork
-uruchamia takie proxy obok serwera i podpina je jako własny endpoint (Custom).
-
-Włączenie (Docker):
-
-```bash
-echo 'OPENCODE_PROXY_URL=http://zen-proxy:8787/v1' >> .env
-docker compose --profile opencode up -d --build
-```
-
-Przy starcie serwer sam dodaje endpoint „OpenCode Free (zen-proxy)” z kluczem `public`
-i rejestruje wszystkie modele, które proxy zwraca z `/v1/models` (proxy pokazuje tylko
-darmowe i co godzinę sprawdza, które z nich faktycznie działają). Jeśli proxy jeszcze
-się uruchamia, serwer próbuje ponownie co 30 s, maksymalnie 10 razy. Nowe modele
-dochodzą później przez codzienną synchronizację custom endpointów. Wyłączone w panelu
-modele, usunięte modele i wyłączony klucz endpointu zostają tak, jak je ustawisz.
-Modele wpisujesz do łańcucha jak każde inne.
-
-Bez Dockera uruchom proxy samodzielnie (`node zen-proxy.mjs`, słucha na
-`127.0.0.1:8787`) i ustaw `OPENCODE_PROXY_URL=http://127.0.0.1:8787/v1`. Pozostałe
-zmienne (`OPENCODE_PROXY_KEY`, `OPENCODE_PROXY_LABEL`, `OPENCODE_ZEN_KEY`) są opisane
-w `.env.example`. Kod: `server/src/services/opencode-free.ts`, obraz proxy:
-`docker/zen-proxy/Dockerfile` (przypięty do konkretnego commita, aktualizacja przez
-zmianę `ZEN_PROXY_REF`).
-
-### Gdy wszystkie modele zwracają 429 (stan od ~2026-10)
-
-Od ok. 2026-10-23 anonimowa pula odpowiada na każdy model błędem
-`429 FreeUsageLimitError` („Free usage limit reached. Subscribe to OpenCode Go…”)
-— także z adresów, które wcześniej nic nie wysyłały. To limit po stronie OpenCode
-(nalicza użycie per konto, środowisko i sieć; współdzielone IP wpadają w limit),
-a nie blokada „to nie aplikacja OpenCode”: podszywanie się proxy pod klienta
-nadal przechodzi bramkę aplikacji (nie ma `403`), kończy się dopiero na limicie.
-Żaden nagłówek ani User-Agent tego nie obejdzie — sprawdzone wcześniej także
-bezpośrednio (`#1204`, wycofane).
-
-Co zrobić:
-
-1. Podepnij własny klucz — dostajesz własny limit zamiast współdzielonej puli.
-   Darmowy klucz: [opencode.ai/auth](https://opencode.ai/auth). Wpisz go w panelu
-   w klucz endpointu „OpenCode Free (zen-proxy)” (Keys → Custom) albo ustaw
-   `OPENCODE_PROXY_KEY=<klucz>` przed pierwszym startem (zapisany klucz nie jest
-   już nadpisywany z `.env`, więc przy istniejącej instalacji zmień go w panelu
-   albo usuń klucz endpointu i zrestartuj). Alternatywnie `OPENCODE_ZEN_KEY=<klucz>`
-   ustawia klucz dla całego sidecara. Proxy przekazuje nie-`public` klucz dalej
-   do OpenCode, więc limit liczy się na Twoje konto.
-2. Niezawodny dostęp to płatne [OpenCode Go](https://opencode.ai/go).
-3. Anonimową pulę zostaw jako best-effort: zarejestrowane modele zostają i same
-   wracają, gdy limit odpuści.
-
-Po udanej rejestracji serwer zagląda (bez zużywania limitu czatu) do własnego
-werdyktu proxy (`/api/status`) i gdy pula wygląda na martwą (0 osiągalnych
-modeli po pełnym cyklu sond), loguje jedno ostrzeżenie `[opencode-free]` z tym,
-co powyżej — to diagnostyka, nie wyrok, i nigdy nie blokuje startu.
-
-Uwagi:
-
-- To obejście blokady OpenCode, a nie oficjalny dostęp. Regulamin OpenCode tego nie
-  przewiduje. OpenCode może to w każdej chwili zablokować albo zmienić listę modeli.
-  Prompty w darmowym planie mogą służyć do trenowania modeli. Nie wysyłaj tam niczego
-  poufnego.
-- Darmowy plan ma limity na IP i bywa przeciążony (od ~2026-10 anonimowa pula
-  bywa pusta całkiem — patrz wyżej). Gdy model odpowie 429/5xx, proxy
-  samo przełącza się na inny darmowy model (nagłówek `x-zen-served-by`), więc
-  statystyki w panelu mogą przypisać odpowiedź do modelu, o który pytałeś.
-
 ## Wdrożenie
 
 Obraz buduje `.github/workflows/docker.yml` przy każdym pushu na `main`:
@@ -121,7 +48,9 @@ Obraz buduje `.github/workflows/docker.yml` przy każdym pushu na `main`:
 docker compose pull && docker compose up -d
 ```
 
-Własne ustawienia zakładek (podział dobre/słabe, oficjalne źródła limitów) podmontuj na
+Własne ustawienia zakładek (podział dobre/słabe, oficjalne źródła limitów, kolejność
+preferowanych modeli OpenRouter w łańcuchach — klucz `openrouterPrefer` w `config.json`)
+podmontuj na
 `/app/client/dist/budzet/config.json`. Wzór jest w `client/public/budzet/config.json`,
 przykład montowania jest zakomentowany w `docker-compose.yml`. Zmiana pliku = odświeżenie
 strony, bez restartu.

@@ -260,6 +260,24 @@ header nav .zk-wiecej { display: none; position: relative; }
 #zk-strona .zk-pusto { padding: 32px 14px; text-align: center; color: var(--muted-foreground); }
 #zk-strona .zk-stopka { margin-top: 12px; max-width: 90ch; }
 
+#zk-strona .zk-sekcja-lancuchy { margin-top: 28px; }
+#zk-strona .zk-lancuchy { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+#zk-strona .zk-lancuch {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "nazwa liczba" "pasek pasek" "opis opis";
+  gap: 4px 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--zk-r);
+  background: var(--card);
+}
+#zk-strona .zk-lancuch-nazwa { grid-area: nazwa; font-weight: 500; }
+#zk-strona .zk-lancuch-nazwa code { font-weight: 400; font-size: 12px; margin-left: 6px; }
+#zk-strona .zk-lancuch-liczba { grid-area: liczba; text-align: right; font-size: 18px; white-space: nowrap; }
+#zk-strona .zk-lancuch-pasek { grid-area: pasek; }
+#zk-strona .zk-lancuch .zk-pod { grid-area: opis; }
+
 @media (max-width: 760px) {
   #zk-strona .zk-szukaj { width: 100%; }
   #zk-strona .zk-legenda { margin-left: 0; }
