@@ -9,6 +9,7 @@ import { FirecrawlProvider } from './firecrawl.js';
 import { LinkupProvider } from './linkup.js';
 import { ParallelProvider } from './parallel.js';
 import { KeenableProvider } from './keenable.js';
+import { KeylessDecisionProvider } from './decision-only.js';
 import { CloudflareProvider } from './cloudflare.js';
 import { AIHordeProvider } from './aihorde.js';
 import { ModelScopeProvider } from './modelscope.js';
@@ -17,6 +18,8 @@ import { ZhipuProvider } from './zhipu.js';
 import { SailProvider } from './sail.js';
 import { AclideProvider } from './aclide.js';
 import { SpekaProvider } from './speka.js';
+import { KenariProvider } from './kenari.js';
+import { KiosAPIProvider } from './kiosapi.js';
 import { TyphoonProvider } from './typhoon.js';
 import { PlugskyProvider } from './plugsky.js';
 import { InferbaseProvider } from './inferbase.js';
@@ -25,6 +28,9 @@ import { LlmtrProvider } from './llmtr.js';
 import { GizmoProvider } from './gizmo.js';
 import { BlockRunProvider } from './blockrun.js';
 import { MoondreamProvider } from './moondream.js';
+import { JamaiProvider } from './jamai.js';
+import { NabhProvider } from './nabh.js';
+import { NovaiProvider } from './novai.js';
 import { ElectronHubProvider } from './electronhub.js';
 import { ExperientialProvider } from './experiential.js';
 import { Router9Provider } from './router9.js';
@@ -43,6 +49,7 @@ import { ApinexProvider } from './apinex.js';
 import { OnomeoProvider } from './onomeo.js';
 import { IteraComputeProvider } from './iteracompute.js';
 import { SerpSearchProvider } from './serpsearch.js';
+import { BraveProvider } from './brave.js';
 
 const providers = new Map<Platform, BaseProvider>();
 
@@ -54,6 +61,8 @@ function register(provider: BaseProvider) {
 // cold start; the default 15s false-flags them as broken. 60s covers the
 // bulk; per-call overrides via CompletionOptions.timeoutMs still win.
 register(new GoogleProvider({ timeoutMs: 60_000 }));
+register(new KeylessDecisionProvider('halx', 'HAL-X'));
+register(new KeylessDecisionProvider('aisense', 'AI SENSE'));
 
 // Groq - OpenAI-compatible
 register(new OpenAICompatProvider({
@@ -78,6 +87,8 @@ register(new OpenAICompatProvider({
 register(new SailProvider());
 register(new AclideProvider());
 register(new SpekaProvider());
+register(new KenariProvider());
+register(new KiosAPIProvider());
 register(new TyphoonProvider());
 register(new PlugskyProvider());
 register(new InferbaseProvider());
@@ -86,6 +97,9 @@ register(new LlmtrProvider());
 register(new GizmoProvider());
 register(new BlockRunProvider());
 register(new MoondreamProvider());
+register(new JamaiProvider());
+register(new NabhProvider());
+register(new NovaiProvider());
 register(new BeatApiProvider());
 register(new ApinexProvider());
 register(new OnomeoProvider());
@@ -93,6 +107,7 @@ register(new OnomeoProvider());
 // monthly token allowance; no free credential probe (see adapter docs).
 register(new IteraComputeProvider());
 register(new SerpSearchProvider());
+register(new BraveProvider());
 
 // Free-plan grants are shared wallets, not free credits per model. Eligibility
 // and tested model rows belong in Oracle, never in bundled DB migrations.
