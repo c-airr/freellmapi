@@ -467,11 +467,24 @@ export function deleteBackup(db: Db, id: number): void {
 /** Statements naming a table the dump policy excludes. A dump this server
  *  wrote never contains them, so hitting this means the file was edited or
  *  produced elsewhere — and restoring it would overwrite the operator's own
- *  accounts and sessions. */
+ *  accounts and sessions. Tested against the dump with its quoted values
+ *  blanked (`withoutLiterals`): a saved chat that says "update users" is row
+ *  data, not a statement. */
 const EXCLUDED_STATEMENT_RE = new RegExp(
-  `\\b(?:INSERT\\s+INTO|DELETE\\s+FROM|UPDATE|DROP\\s+TABLE)\\s+"?(?:${[...EXCLUDED_TABLES].join('|')})"?\\b`,
+  `\\b(?:INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO|REPLACE\\s+INTO|DELETE\\s+FROM|UPDATE(?:\\s+OR\\s+\\w+)?|DROP\\s+TABLE)` +
+    `\\s+(?:"?main"?\\s*\\.\\s*)?"?(?:${[...EXCLUDED_TABLES].join('|')})"?\\b`,
   'i',
 );
+
+/** The dump with every single-quoted SQL literal (text, and the X'..' blob
+ *  form) blanked and every comment removed, leaving only statements and
+ *  identifiers. One left-to-right scan, like SQLite's tokenizer: a quote inside
+ *  a comment ("-- the owner's key") or inside a "quoted identifier" must not
+ *  open a literal that would hide the statements after it. */
+function withoutLiterals(sql: string): string {
+  return sql.replace(/"(?:[^"]|"")*"|'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?\*\//g,
+    (token) => (token[0] === '"' ? token : token[0] === "'" ? "''" : ' '));
+}
 
 export interface RestoreResult {
   backup: BackupMeta;
@@ -519,7 +532,7 @@ export function restoreBackup(db: Db, id: number): RestoreResult {
   }
 
   const offending = header.tables.find(isExcludedTable);
-  if (offending || EXCLUDED_STATEMENT_RE.test(sql)) {
+  if (offending || EXCLUDED_STATEMENT_RE.test(withoutLiterals(sql))) {
     throw httpError(
       `This backup writes to ${offending ?? 'an account or session table'}, which backups never include. Refusing to restore it.`,
       400,
@@ -539,16 +552,20 @@ export function restoreBackup(db: Db, id: number): RestoreResult {
     // One transaction for the whole file: better-sqlite3 rolls it back if any
     // statement throws, so a bad dump leaves the database exactly as it was.
     db.transaction(() => {
-      // Replaying historical log rows is not new provider usage. In a full
-      // restore the ledger is restored separately; in a partial log restore
-      // the existing ledger remains authoritative. Keep DDL in this same
-      // transaction so a failed restore also restores the trigger.
-      const usageTrigger = header.tables.includes('requests')
-        ? db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'requests_key_monthly_usage'").get() as { sql: string } | undefined
-        : undefined;
-      if (usageTrigger) db.exec('DROP TRIGGER requests_key_monthly_usage');
+      // Replaying historical rows is not new activity. Every trigger on a
+      // restored table (the per-key and per-model monthly usage ledgers on
+      // `requests`, and any added later) would count them again: in a full
+      // restore the ledgers are restored separately; in a partial log restore
+      // the existing ledgers remain authoritative. Keep DDL in this same
+      // transaction so a failed restore also restores the triggers.
+      const triggers = header.tables.length === 0
+        ? []
+        : db.prepare(
+          `SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name IN (${header.tables.map(() => '?').join(', ')})`,
+        ).all(...header.tables) as { name: string; sql: string }[];
+      for (const t of triggers) db.exec(`DROP TRIGGER "${t.name}"`);
       db.exec(sql);
-      if (usageTrigger) db.exec(usageTrigger.sql);
+      for (const t of triggers) db.exec(t.sql);
     })();
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -591,6 +608,17 @@ function readForeignKeysPragma(db: Db): boolean {
 /* Auto-backup scheduler                                              */
 /* ------------------------------------------------------------------ */
 
+/** `YYYY-MM-DD` on the server's local calendar. The schedule HH:MM is local
+ *  wall time, so the day key and the intervalDays span have to use that same
+ *  clock. A UTC date rolls over at a different hour, and the backup then runs
+ *  at that hour — twice on the first local day (#1888). Stored values are
+ *  already `YYYY-MM-DD`, so an existing backup_last_run_day still compares. */
+function localDayKey(now: Date): string {
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
 export function startBackupScheduler(scheduler: Scheduler): () => void {
   let lastRunDay: string | null = getSetting(LAST_RUN_SETTING) ?? null;
 
@@ -602,7 +630,7 @@ export function startBackupScheduler(scheduler: Scheduler): () => void {
     const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     if (hhmm < schedule.time) return;
 
-    const today = now.toISOString().slice(0, 10);
+    const today = localDayKey(now);
     if (lastRunDay === today) return;
 
     const intervalDays = Math.max(1, schedule.intervalDays);

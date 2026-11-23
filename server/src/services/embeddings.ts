@@ -14,6 +14,8 @@ import { parseRetryAfterMs } from '../providers/base.js';
 import { RetryHintTracker, retryAfterSeconds } from '../lib/retry-hint.js';
 import { getClientContext } from '../lib/client-context.js';
 import { reserveProviderCredential } from './provider-credential.js';
+import { setCooldown } from './ratelimit.js';
+import { meterCloudflare, roughTokens } from './cloudflare-neurons.js';
 import { proxyFetch } from '../lib/proxy.js';
 import { bearerAuthHeader } from '../lib/credential.js';
 import { markKeyHealthyFromRequest } from './health.js';
@@ -24,6 +26,9 @@ import { ELECTRONHUB_BASE_URL } from '../providers/electronhub.js';
 import { INFERBASE_BASE_URL } from '../providers/inferbase.js';
 import { LLMTR_BASE_URL } from '../providers/llmtr.js';
 import { JAMAI_BASE_URL, jamaiHeaders } from '../providers/jamai.js';
+import { FREEINFERENCE_BASE_URL } from '../providers/freeinference.js';
+import { FREEAI_BASE_URL } from '../providers/freeai.js';
+import { SILVR_BASE_URL } from '../providers/silvr.js';
 
 export interface EmbeddingModelRow {
   id: number;
@@ -112,6 +117,7 @@ const FETCH_TIMEOUT_MS = 30_000;
 
 /** Provider adapters that can safely receive catalog-managed embedding rows. */
 export const EMBEDDING_PLATFORMS = new Set([
+  'freeinference',
   'jamai',
   'google',
   'nvidia',
@@ -124,6 +130,8 @@ export const EMBEDDING_PLATFORMS = new Set([
   'electronhub',
   'inferbase',
   'llmtr',
+  'silvr',
+  'freeai',
 ]);
 
 interface ProviderCallResult {
@@ -156,13 +164,16 @@ async function openAiStyleEmbed(
     // A custom endpoint with auth off holds the `no-key` sentinel: omit the
     // header instead of sending `Bearer no-key` (#1331).
     headers: headers ?? { 'Content-Type': 'application/json', ...bearerAuthHeader(key) },
-    ...(platform === 'jamai' ? { redirect: 'error' as const } : {}),
+    ...(['jamai', 'silvr'].includes(platform) ? { redirect: 'error' as const } : {}),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   }, platform, 'embedding', timeoutMs);
   if (!r.ok) {
     // JamAI error bodies may echo credential-bearing request headers.
-    if (platform === 'jamai') throw new EmbeddingsError(`JamAI embeddings error (HTTP ${r.status})`, r.status, undefined, parseRetryAfterMs(r.headers.get('retry-after')));
+    if (['jamai', 'silvr'].includes(platform)) {
+      await r.body?.cancel();
+      throw new EmbeddingsError(`${platform} embeddings error (HTTP ${r.status})`, r.status, undefined, parseRetryAfterMs(r.headers.get('retry-after')));
+    }
     throw await upstreamEmbeddingsError(r);
   }
   const j = (await r.json()) as {
@@ -170,22 +181,83 @@ async function openAiStyleEmbed(
     data?: { index?: number; embedding: number[] }[];
     usage?: { prompt_tokens?: number; total_tokens?: number };
   };
-  const data = [...(j.data ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-  if (['electronhub', 'inferbase', 'llmtr', 'jamai'].includes(platform) && (
-    j.model !== modelId || data.length !== inputs.length ||
-    data.some((d, i) => d.index !== i || !Array.isArray(d.embedding) ||
+  const data = [...(Array.isArray(j?.data) ? j.data : [])].sort((a, b) => (a?.index ?? 0) - (b?.index ?? 0));
+  if (['electronhub', 'inferbase', 'llmtr', 'jamai', 'silvr'].includes(platform) && (
+    j?.model !== modelId || data.length !== inputs.length ||
+    data.some((d, i) => !d || d.index !== i || !Array.isArray(d.embedding) ||
       d.embedding.length !== (dimensions ?? expectedDimensions) ||
-      d.embedding.some(value => typeof value !== 'number' || !Number.isFinite(value)))
+      d.embedding.some(value => typeof value !== 'number' || !Number.isFinite(value)) ||
+      platform === 'silvr' && !d.embedding.some(value => value !== 0))
   )) {
     // A successful HTTP response is not enough: wrong model/dimension or
     // malformed vectors would corrupt the caller's embedding family.
-    const provider = platform === 'jamai' ? 'JamAI' : platform === 'electronhub' ? 'ElectronHub' : platform === 'llmtr' ? 'LLMTR' : 'Inferbase';
+    const provider = platform === 'silvr' ? 'SilvR' : platform === 'jamai' ? 'JamAI' : platform === 'electronhub' ? 'ElectronHub' : platform === 'llmtr' ? 'LLMTR' : 'Inferbase';
     throw new EmbeddingsError(`${provider} returned mismatched or malformed embeddings`, 502);
   }
   return {
     vectors: data.map(d => d.embedding),
     inputTokens: j.usage?.prompt_tokens ?? j.usage?.total_tokens ?? null,
   };
+}
+
+/** The gateway requests bge-m3 but replies with its canonical BAAI/bge-m3
+ * identity. These are the only accepted aliases; never mix embedding spaces. */
+async function freeInferenceEmbed(row: EmbeddingModelRow, key: string, inputs: string[], dimensions?: number): Promise<ProviderCallResult> {
+  if (!key.trim() || key === 'no-key') throw new EmbeddingsError('FreeInference API key is required', 401);
+  if (row.model_id !== 'bge-m3' || row.dimensions !== 1024 || (dimensions !== undefined && dimensions !== 1024)) {
+    throw new EmbeddingsError('FreeInference embeddings support only bge-m3 at 1024 dimensions', 400);
+  }
+  const r = await proxyFetch(`${FREEINFERENCE_BASE_URL}/embeddings`, {
+    method: 'POST', redirect: 'error',
+    headers: { 'Content-Type': 'application/json', ...bearerAuthHeader(key) },
+    body: JSON.stringify({ model: row.model_id, input: inputs, encoding_format: 'float' }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  }, row.platform, 'embedding', FETCH_TIMEOUT_MS);
+  if (!r.ok) throw new EmbeddingsError(`FreeInference embeddings error (HTTP ${r.status})`, r.status, undefined, parseRetryAfterMs(r.headers.get('retry-after')));
+  const j = await r.json().catch(() => null) as {
+    model?: string; data?: { index?: number; embedding?: number[] }[];
+    usage?: { prompt_tokens?: number; total_tokens?: number };
+  } | null;
+  if (!j || !['bge-m3', 'BAAI/bge-m3'].includes(j.model ?? '') || !Array.isArray(j.data) ||
+      j.data.length !== inputs.length || j.data.some(d => !d || !Number.isInteger(d.index))) {
+    throw new EmbeddingsError('FreeInference returned mismatched or malformed embeddings', 502);
+  }
+  const data = [...j.data].sort((a, b) => a.index! - b.index!);
+  if (data.some((d, i) => d.index !== i || !Array.isArray(d.embedding) || d.embedding.length !== 1024 ||
+      d.embedding.some(v => typeof v !== 'number' || !Number.isFinite(v)))) {
+    throw new EmbeddingsError('FreeInference returned mismatched or malformed embeddings', 502);
+  }
+  const tokens = j.usage?.prompt_tokens ?? j.usage?.total_tokens;
+  return { vectors: data.map(d => d.embedding!), inputTokens: typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0 ? tokens : null };
+}
+
+/** EmbeddingGemma 2 uses the native input schema, not ai/v1/embeddings.
+ * Never fall back to the retired 300M model: its vectors are a different family. */
+async function cloudflareEmbeddingGemma2(row: EmbeddingModelRow, accountId: string, token: string, inputs: string[], dimensions?: number): Promise<ProviderCallResult> {
+  if (row.dimensions !== 768 || (dimensions !== undefined && dimensions !== 768)) {
+    throw new EmbeddingsError('EmbeddingGemma 2 supports 768 dimensions', 400);
+  }
+  const r = await proxyFetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/@cf/google/embeddinggemma-2`, {
+    method: 'POST', redirect: 'error',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input: inputs }), signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  }, 'cloudflare', 'embedding', FETCH_TIMEOUT_MS);
+  if (!r.ok) throw new EmbeddingsError(`Cloudflare embeddings error (HTTP ${r.status})`, r.status, undefined, parseRetryAfterMs(r.headers.get('retry-after')));
+  const json = await r.json() as {
+    success?: boolean; errors?: unknown[];
+    result?: { model?: string; data?: { index?: number; embedding?: number[] }[]; usage?: { prompt_tokens?: number } };
+  };
+  const data = json.result?.data;
+  if (json.success === false || json.errors?.length || json.result?.model !== row.model_id || !Array.isArray(data) || data.length !== inputs.length ||
+      data.some(d => !d || !Number.isInteger(d.index))) {
+    throw new EmbeddingsError('Cloudflare returned mismatched or malformed embeddings', 502);
+  }
+  const ordered = [...data].sort((a, b) => a.index! - b.index!);
+  if (ordered.some((d, i) => d.index !== i || !Array.isArray(d.embedding) || d.embedding.length !== 768 || d.embedding.some(v => !Number.isFinite(v)))) {
+    throw new EmbeddingsError('Cloudflare returned mismatched or malformed embeddings', 502);
+  }
+  const tokens = json.result?.usage?.prompt_tokens;
+  return { vectors: ordered.map(d => d.embedding!), inputTokens: typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0 ? tokens : null };
 }
 
 export async function probeEmbeddingDimensions(baseUrl: string, key: string, modelId: string): Promise<number> {
@@ -276,6 +348,8 @@ export function registerCustomEmbeddingModel(db: Db, reg: CustomEmbeddingRegistr
 async function callProvider(row: EmbeddingModelRow, credential: ProviderCredential, inputs: string[], dimensions?: number): Promise<ProviderCallResult> {
   const { key } = credential;
   switch (row.platform) {
+    case 'freeinference':
+      return freeInferenceEmbed(row, key, inputs, dimensions);
     case 'custom':
       if (!credential.baseUrl) throw new EmbeddingsError('custom embedding provider is missing base_url', 500);
       return openAiStyleEmbed(`${credential.baseUrl}/embeddings`, row.platform, key, row.model_id, inputs, {}, dimensions);
@@ -294,6 +368,34 @@ async function callProvider(row: EmbeddingModelRow, credential: ProviderCredenti
       return openAiStyleEmbed(`${SPEKA_BASE_URL}/embeddings`, row.platform, key, row.model_id, inputs, { encoding_format: 'float' }, dimensions);
     case 'electronhub':
       return openAiStyleEmbed(`${ELECTRONHUB_BASE_URL}/embeddings`, row.platform, key, row.model_id, inputs, { encoding_format: 'float' }, dimensions, row.dimensions);
+    case 'freeai': {
+      const expected = ({ 'bge-m3': 1024, 'embeddinggemma-2': 768 } as Record<string, number>)[row.model_id];
+      if (!expected || row.dimensions !== expected || dimensions !== undefined && dimensions !== expected)
+        throw new EmbeddingsError('Free.ai embeddings require a tested model and its native dimensions', 400);
+      const r = await proxyFetch(FREEAI_BASE_URL + '/v1/embeddings/', {
+        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        headers: { 'Content-Type': 'application/json', ...bearerAuthHeader(key) },
+        body: JSON.stringify({ model: row.model_id, input: inputs }),
+      }, row.platform, 'embedding', FETCH_TIMEOUT_MS);
+      if (!r.ok) {
+        await r.body?.cancel();
+        throw new EmbeddingsError('Free.ai embeddings error (HTTP ' + r.status + ')', r.status, undefined, parseRetryAfterMs(r.headers.get('retry-after')));
+      }
+      const body = await r.json().catch(() => null) as { model?: string; embeddings?: number[][]; count?: number; dimensions?: number; tokens_used?: number } | null;
+      if (body?.model !== row.model_id || body.dimensions !== expected || body.count !== inputs.length ||
+          !Array.isArray(body.embeddings) || body.embeddings.length !== inputs.length ||
+          body.embeddings.some(v => !Array.isArray(v) || v.length !== expected || !v.every(Number.isFinite) || !v.some(x => x !== 0)))
+        throw new EmbeddingsError('Free.ai returned mismatched or malformed embeddings', 502);
+      return { vectors: body.embeddings, inputTokens: typeof body.tokens_used === 'number' && Number.isSafeInteger(body.tokens_used) && body.tokens_used >= 0 ? body.tokens_used : null };
+    }
+    case 'silvr': {
+      const nativeDimensions: Record<string, number> = { 'nemotron-3-5-embed-1b': 2048, 'nemotron-3-5-embed-8b': 4096, 'gemini-embedding-2': 3072, 'gemini-embedding-001': 3072, 'text-embedding-3-small': 1536 };
+      const expected = nativeDimensions[row.model_id];
+      if (!expected || row.dimensions !== expected || dimensions !== undefined && dimensions !== expected) {
+        throw new EmbeddingsError('SilvR embeddings require a tested model and its native dimensions', 400);
+      }
+      return openAiStyleEmbed(`${SILVR_BASE_URL}/embeddings`, row.platform, key, row.model_id, inputs, {}, undefined, expected);
+    }
     case 'inferbase':
       return openAiStyleEmbed(`${INFERBASE_BASE_URL}/embeddings`, row.platform, key, row.model_id, inputs, { encoding_format: 'float' }, dimensions, row.dimensions);
     case 'jamai':
@@ -315,9 +417,17 @@ async function callProvider(row: EmbeddingModelRow, credential: ProviderCredenti
       if (sep === -1) throw new EmbeddingsError('cloudflare key is not in account_id:token form', 500);
       const accountId = key.slice(0, sep);
       const token = key.slice(sep + 1);
-      return openAiStyleEmbed(
-        `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/embeddings`,
-        row.platform, token, row.model_id, inputs, {},
+      return meterCloudflare(
+        key, row.model_id,
+        { inputTokens: inputs.reduce((sum, text) => sum + roughTokens(text), 0) },
+        () => row.model_id === '@cf/google/embeddinggemma-2'
+          ? cloudflareEmbeddingGemma2(row, accountId, token, inputs, dimensions)
+          : openAiStyleEmbed(
+          `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/embeddings`,
+          row.platform, token, row.model_id, inputs, {},
+        ),
+        r => (r.inputTokens != null ? { inputTokens: r.inputTokens } : null),
+        e => new EmbeddingsError(e.message, 429, 'quota_exceeded', e.retryAfterSec * 1000),
       );
     }
     case 'huggingface': {
@@ -409,44 +519,56 @@ export async function runEmbeddings(model: string | undefined, inputs: string[],
   // limited end to end earns a Retry-After, and then the soonest one.
   const hints = new RetryHintTracker();
   for (const row of chain) {
-    const { credential, budgetBlocked } = reserveProviderCredential(row, estimateTokens(inputs));
-    if (!credential) {
-      if (budgetBlocked) {
-        lastError = new EmbeddingsError('Monthly key budget exhausted', 429, 'quota_exceeded');
-        hints.record(429, secondsUntilNextMonth() * 1000);
+    const tried = new Set<number>();
+    do {
+      const { credential, budgetBlocked, cooldownBlocked, cooldownRetryAfterMs } = reserveProviderCredential(row, estimateTokens(inputs), keyId => tried.has(keyId));
+      if (!credential) {
+        if (budgetBlocked) {
+          lastError = new EmbeddingsError('Monthly key budget exhausted', 429, 'quota_exceeded');
+          hints.record(429, secondsUntilNextMonth() * 1000);
+        }
+        if (cooldownBlocked) {
+          lastError ??= new EmbeddingsError('Provider keys are cooling down', 429);
+          hints.record(429, cooldownRetryAfterMs);
+        }
+        break;
       }
-      continue;
-    }
-    const started = Date.now();
-    try {
-      const out = await callProvider(row, credential, inputs, dimensions);
-      if (out.vectors.length !== inputs.length || out.vectors.some(v => !Array.isArray(v) || v.length === 0)) {
-        throw new EmbeddingsError('upstream returned malformed embeddings', 502);
+      tried.add(credential.id);
+      const started = Date.now();
+      try {
+        const out = await callProvider(row, credential, inputs, dimensions);
+        if (out.vectors.length !== inputs.length || out.vectors.some(v => !Array.isArray(v) || v.length === 0)) {
+          throw new EmbeddingsError('upstream returned malformed embeddings', 502);
+        }
+        const tokens = out.inputTokens ?? estimateTokens(inputs);
+        logEmbeddingRequest(row, credential.id, 'success', tokens, Date.now() - started, null);
+        // A served embedding is evidence the key works, the same as a served
+        // chat request (#1493) or a served search (#1612): stamp last_healthy_at
+        // and lift an 'unknown'/'error' key. Embedding-only keys (and #1459-era
+        // providers that refuse probes) had no success signal at all otherwise.
+        markKeyHealthyFromRequest(credential.id);
+        return {
+          family,
+          platform: row.platform,
+          modelId: row.model_id,
+          dimensions: out.vectors[0].length,
+          vectors: out.vectors,
+          inputTokens: tokens,
+        };
+      } catch (err: any) {
+        const e = err instanceof EmbeddingsError ? err : new EmbeddingsError(String(err?.message ?? err), 502);
+        logEmbeddingRequest(row, credential.id, 'error', 0, Date.now() - started, e.message.slice(0, 300));
+        if (row.platform === 'custom' && e.status === 429) {
+          setCooldown(row.platform, row.model_id, credential.id, e.retryAfterMs);
+        }
+        lastError = e;
+        hints.record(e.status, e.retryAfterMs);
+        if (![401, 402, 403, 429].includes(e.status)) break;
+        // fall through to the next provider in the family
+      } finally {
+        credential.release();
       }
-      const tokens = out.inputTokens ?? estimateTokens(inputs);
-      logEmbeddingRequest(row, credential.id, 'success', tokens, Date.now() - started, null);
-      // A served embedding is evidence the key works, the same as a served
-      // chat request (#1493) or a served search (#1612): stamp last_healthy_at
-      // and lift an 'unknown'/'error' key. Embedding-only keys (and #1459-era
-      // providers that refuse probes) had no success signal at all otherwise.
-      markKeyHealthyFromRequest(credential.id);
-      return {
-        family,
-        platform: row.platform,
-        modelId: row.model_id,
-        dimensions: out.vectors[0].length,
-        vectors: out.vectors,
-        inputTokens: tokens,
-      };
-    } catch (err: any) {
-      const e = err instanceof EmbeddingsError ? err : new EmbeddingsError(String(err?.message ?? err), 502);
-      logEmbeddingRequest(row, credential.id, 'error', 0, Date.now() - started, e.message.slice(0, 300));
-      lastError = e;
-      hints.record(e.status, e.retryAfterMs);
-      // fall through to the next provider in the family
-    } finally {
-      credential.release();
-    }
+    } while (row.platform === 'custom');
   }
 
   throw new EmbeddingsError(

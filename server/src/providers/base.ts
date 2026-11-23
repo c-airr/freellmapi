@@ -10,6 +10,7 @@ import type { QuotaObservationContext } from '../services/provider-quota.js';
 import type { ExtendedSamplingOptions } from '../lib/sampling-params.js';
 import { proxyFetch } from '../lib/proxy.js';
 import { providerTimeoutMs, streamStallTimeoutMs } from '../lib/provider-timeout.js';
+import { currentUpstreamWatch } from '../lib/upstream-watch.js';
 import { extractThinkTagsFromStream } from '../lib/think-tags.js';
 
 /** A provider HTTP error carrying the upstream status and, when the provider
@@ -19,6 +20,7 @@ import { extractThinkTagsFromStream } from '../lib/think-tags.js';
 export interface ProviderHttpError extends Error {
   status?: number;
   retryAfterMs?: number;
+  providerRejection?: 'upstream' | 'request' | 'model';
   /** Explicit daily-window violation from structured upstream quota details. */
   dailyQuotaExhausted?: boolean;
 }
@@ -35,7 +37,9 @@ const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
 export function parseRetryAfterMs(value: string | null | undefined): number | undefined {
   if (!value) return undefined;
   const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) return Math.min(Number(trimmed) * 1000, MAX_RETRY_AFTER_MS);
+  // Delta-seconds, fractional ones too: Date.parse('1.5') reads as a date in 2001 and would
+  // turn a 1.5 s back-off into an immediate retry.
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) return Math.min(Math.round(Number(trimmed) * 1000), MAX_RETRY_AFTER_MS);
   const when = Date.parse(trimmed);
   if (!Number.isNaN(when)) {
     return Math.min(Math.max(0, when - Date.now()), MAX_RETRY_AFTER_MS);
@@ -152,9 +156,15 @@ function safeStringify(value: unknown): string {
 export function providerHttpError(res: Response, message: string, body?: unknown): ProviderHttpError {
   const err = new Error(message) as ProviderHttpError;
   err.status = res.status;
+  err.providerRejection = 'upstream';
   const retryAfterMs = parseRetryAfterMs(res.headers?.get('retry-after')) ?? parseStatedRetryMs(body);
   if (retryAfterMs !== undefined) err.retryAfterMs = retryAfterMs;
   return err;
+}
+
+/** An adapter cannot serve this request or model, though another route may. */
+export function providerRequestError(message: string, kind: 'request' | 'model'): ProviderHttpError {
+  return Object.assign(new Error(message), { status: 400, providerRejection: kind });
 }
 
 // Extended sampling knobs (top_k, seed, penalties, logit_bias, logprobs,
@@ -186,6 +196,19 @@ export interface CompletionOptions extends ExtendedSamplingOptions {
    * finish. Composed with the per-attempt timeout in fetchWithTimeout; never
    * serialized into the request body. */
   signal?: AbortSignal;
+  /**
+   * Anthropic compatibility metadata from a `/v1/messages` caller (#1589):
+   * the request's `safeguards` field and `anthropic-beta` header, carried
+   * with the request through the routing loop so a future Anthropic-native
+   * upstream adapter can forward them. OpenAI-compatible adapters MUST NOT
+   * serialize this into the outbound body — strict upstreams 400 on unknown
+   * top-level fields — so it is kept out of the request payload by
+   * construction (providers build the body from known fields only).
+   */
+  anthropicCompat?: {
+    safeguards?: unknown;
+    anthropicBeta?: string;
+  };
 }
 
 /** Per-call abort/timeout wiring for fetchWithTimeout. */
@@ -234,6 +257,14 @@ export abstract class BaseProvider {
    * the platform "configured", and the provider omits the Authorization header
    * on outgoing requests. Defaults to false; set by subclasses. */
   keyless = false;
+
+  /** Whether this built-in platform can serve chat completions (#1741). Search,
+   * speech and decision integrations register so their keys pool and
+   * health-check like every other platform, but their adapters refuse chat.
+   * False lets POST /api/models reject chat registrations up front and keeps
+   * the router from walking a chain entry that can only ever fail. Defaults to
+   * true; overridden by subclasses. */
+  readonly supportsChat: boolean = true;
 
   abstract chatCompletion(
     apiKey: string,
@@ -500,6 +531,10 @@ export abstract class BaseProvider {
     let buffer = '';
     let sawFinishReason = false;
     let awaitingFirstByte = true;
+    // Fallback silent-window cap (#1960): report the open stream with this
+    // call's declared first-byte patience, then every body read as activity.
+    const watch = currentUpstreamWatch();
+    watch?.opened(chatTimeoutMs);
 
     try {
       while (true) {
@@ -508,6 +543,7 @@ export abstract class BaseProvider {
           : await this.readWithStallTimeout(() => reader.read(), inactivityTimeoutMs);
         awaitingFirstByte = false;
         if (done) break;
+        if (value && value.byteLength > 0) watch?.activity();
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');

@@ -22,7 +22,7 @@ import { sanitizeProviderErrorMessage } from '../lib/error-redaction.js';
 import { convertDocumentBlock, documentRejectionMessage } from '../lib/anthropic-documents.js';
 import { isClientAbortError, newClientAbortError, newHedgeAbortError, isUpstreamClassificationOutput } from '../lib/error-classify.js';
 import { logRequest } from '../lib/request-log.js';
-import { extractApiToken, getStickyModel, setStickyModel } from './proxy.js';
+import { extractApiToken, getStickyModel, setStickyModel, providerSafeStop, sessionIdentityMessages } from './proxy.js';
 import { runFallbackLoop, newFallbackState, fallbackRoutingTokens, recordUpstreamSuccess, type ExhaustionBody, setFallbackHeaders, setExhaustionHeaders, type AttemptRecord, type FallbackState, REASONING_HOLD_MAX_MS } from '../lib/fallback-loop.js';
 import { routedViaValue } from '../lib/header-value.js';
 import { startStreamKeepalive, streamKeepaliveMs } from '../lib/stream-keepalive.js';
@@ -165,6 +165,72 @@ interface AnthropicMessageResponse {
   stop_reason: AnthropicStopReason;
   stop_sequence: string | null;
   usage: { input_tokens: number; output_tokens: number };
+  // Classifier results (#1589, #2011): the routed provider's own results,
+  // unchanged, or the "unsupported" status when the client asked for the
+  // review and no provider answered. See safeguardResultsFor. Never a verdict.
+  safeguard_results?: unknown;
+}
+
+// Anthropic compatibility metadata a `/v1/messages` caller may carry (#1589):
+// Claude Code sends its auto-mode classifier state as the `safeguards`
+// request field plus an `anthropic-beta` header. Both are opaque to this
+// gateway. Preserve them as internal metadata for a future native adapter;
+// current OpenAI-compatible adapters intentionally do not forward either.
+export interface AnthropicCompatMetadata {
+  safeguards?: unknown;
+  anthropicBeta?: string;
+}
+
+export function extractAnthropicCompat(
+  body: Record<string, unknown>,
+  headers: Record<string, string | string[] | undefined>,
+): AnthropicCompatMetadata {
+  const out: AnthropicCompatMetadata = {};
+  if (body.safeguards !== undefined) out.safeguards = body.safeguards;
+  const beta = headers['anthropic-beta'];
+  const value = Array.isArray(beta) ? beta.join(', ') : beta;
+  if (typeof value === 'string' && value.length > 0) out.anthropicBeta = value;
+  return out;
+}
+
+// Claude Code's auto mode asks the server to review tool calls with a
+// `safeguards` entry of this type (#2011). The reply carries a
+// `safeguard_results` entry of the same type.
+export const AUTO_MODE_SAFEGUARD_TYPE = 'dangerous_tool_use';
+
+/** True when the request asks the server to run auto mode's tool-call review. */
+export function requestsAutoModeReview(compat: AnthropicCompatMetadata | undefined): boolean {
+  const safeguards = compat?.safeguards;
+  return Array.isArray(safeguards) && safeguards.some(
+    (entry) => typeof entry === 'object' && entry !== null
+      && (entry as { type?: unknown }).type === AUTO_MODE_SAFEGUARD_TYPE,
+  );
+}
+
+/**
+ * The `safeguard_results` value to send back, or undefined to omit it (#2011).
+ *
+ * Upstream results, when a provider sends any, go back unchanged (#1589).
+ * Otherwise, when Claude Code asked for the review, the answer is the
+ * protocol's own "this server does not run the review" status:
+ * `{type: 'dangerous_tool_use', status: {type: 'unsupported'}}`. That is a
+ * true statement about this gateway: the routed models are not Anthropic's
+ * and no Anthropic review runs here. It is not a verdict. Claude Code reads it
+ * as "the API answered unsupported" and checks the session's actions with its
+ * own classifier requests, which also come through this gateway. It never
+ * marks an action as reviewed.
+ */
+export function safeguardResultsFor(
+  compat: AnthropicCompatMetadata | undefined,
+  upstream: unknown,
+): unknown {
+  if (upstream !== undefined) return upstream;
+  if (!requestsAutoModeReview(compat)) return undefined;
+  return [{ type: AUTO_MODE_SAFEGUARD_TYPE, status: { type: 'unsupported' } }];
+}
+
+function withSafeguardResults(value: unknown): { safeguard_results?: unknown } {
+  return value === undefined ? {} : { safeguard_results: value };
 }
 
 function sendError(res: Response, status: number, errorType: string, message: string): void {
@@ -471,7 +537,7 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
 
   const parsed = messagesSchema.safeParse(req.body);
   if (!parsed.success) {
-    const detail = parsed.error.errors
+    const detail = parsed.error.issues
       .map(e => (e.path.length ? `${e.path.join('.')}: ${e.message}` : e.message))
       .slice(0, 5).join(', ');
     console.warn(`[anthropic] 400 invalid /v1/messages request: ${detail}`);
@@ -515,6 +581,8 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
   const messageHasCacheControl = body.messages.some(message =>
     Array.isArray(message.content)
     && message.content.some(block => block && typeof block === 'object' && 'cache_control' in block));
+  // Session identity before compression can rewrite the first user turn (#1889).
+  const sessionMessages = sessionIdentityMessages(messages);
   const compressionResult = compressRequest(messages, {
     header: req.headers['x-freellm-compress'],
     tools,
@@ -547,10 +615,24 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
   const max_tokens = clientMaxTokens
     ?? (budgetCheck.maxTokens != null ? Math.min(DEFAULT_MAX_TOKENS, budgetCheck.maxTokens) : DEFAULT_MAX_TOKENS);
 
+  // #1589: keep the caller's classifier metadata with the request through
+  // the routing loop. OpenAI-compatible adapters never serialize it into the
+  // outbound body (strict upstreams 400 on unknown fields); it travels only
+  // as request metadata, for a future Anthropic-native adapter to forward.
+  const anthropicCompat = extractAnthropicCompat(
+    body as unknown as Record<string, unknown>,
+    req.headers as Record<string, string | string[] | undefined>,
+  );
+
   const completionOptions = {
     temperature, max_tokens, top_p, top_k: body.top_k ?? undefined, tools, tool_choice,
+    ...(anthropicCompat.safeguards !== undefined || anthropicCompat.anthropicBeta !== undefined
+      ? { anthropicCompat }
+      : {}),
     // tool_choice.disable_parallel_tool_use is OpenAI's parallel_tool_calls: false.
     parallel_tool_calls: body.tool_choice?.disable_parallel_tool_use ? false : undefined,
+    // OpenAI's `stop`, capped the same way /v1/chat/completions caps it.
+    stop: body.stop_sequences?.length ? providerSafeStop(body.stop_sequences) : undefined,
     // Native `thinking: {type, budget_tokens}` → the same internal knob the
     // OpenAI surface's reasoning_effort feeds; absent when the client sent none.
     reasoning_effort: effortFromAnthropicThinking(body.thinking),
@@ -648,11 +730,11 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
     // The strict chain already fixes the model; the only preference left is
     // which member served this session last. Passing a non-member would make
     // routeRequest splice an off-group model into the chain and break the pin.
-    const sticky = getStickyModel(messages, sessionId, stickyScope);
+    const sticky = getStickyModel(sessionMessages, sessionId, stickyScope);
     preferredModel = (sticky != null && groupChain.some(r => r.model_db_id === sticky)) ? sticky : undefined;
   }
   if (preferredModel == null && !groupChain) {
-    preferredModel = resolveStickyPreference(getStickyModel(messages, sessionId, strategyKey), resolvedChain?.chain);
+    preferredModel = resolveStickyPreference(getStickyModel(sessionMessages, sessionId, strategyKey), resolvedChain?.chain);
   }
 
   // Thin adapter over the shared fallback loop (lib/fallback-loop.ts): the
@@ -678,14 +760,15 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
   // Fallback-v2 hedging: the loop aborts this controller (via abortInFlight)
   // when the wall-clock retry budget expires mid-attempt, canceling the
   // in-flight upstream instead of waiting for a stalled attempt to time out.
-  const hedgeAbort = new AbortController();
+  // `let`: abortInFlight aborts only the in-flight attempt and replaces the
+  // controller, so a silent-window failover gets a fresh signal (#1960).
+  let hedgeAbort = new AbortController();
   res.on('close', () => {
     if (!res.writableEnded) {
       clientGone = true;
       clientAbort.abort(newClientAbortError());
     }
   });
-  const dispatchOptions = { ...completionOptions, signal: AbortSignal.any([clientAbort.signal, hedgeAbort.signal]) };
 
   // Decision routing (#1354): with the 'decision' strategy on, a decision
   // model picks which preset (Smartest / Fastest / Balanced / Most reliable)
@@ -700,7 +783,8 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
     attemptLog,
     logIdentity: { surface: 'anthropic messages', requestedModel },
     clientGone: () => clientGone,
-    abortInFlight: () => hedgeAbort.abort(newHedgeAbortError()),
+    abortInFlight: () => { hedgeAbort.abort(newHedgeAbortError()); hedgeAbort = new AbortController(); },
+    streaming: stream === true,
     route: () => {
       // Task-type routing (#1127): same header/derivation as /chat/completions.
       const taskType = resolveTaskType(req, tools, messages);
@@ -712,12 +796,13 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
     },
     dispatch: async (route, attempt, dispatchCtx) => {
       const contextBudget = routeOutputBudget(route, estimatedInputTokens);
-      const routeOptions = { ...dispatchOptions, contextBudget };
+      // Signal composed per attempt: hedgeAbort is replaced after each abort.
+      const routeOptions = { ...completionOptions, signal: AbortSignal.any([clientAbort.signal, hedgeAbort.signal]), contextBudget };
       if (stream) {
         try {
           await streamCompletion(res, route, messages, routeOptions, {
             start, attempt, attemptLog, clientGone: () => clientGone, requestedModel, estimatedInputTokens, tools, pinnedModelId,
-            sessionId, pinned: resolved.pinned, stickyScope, strategyKey, disarmHedge: dispatchCtx.disarmHedge, state,
+            sessionId, sessionMessages, pinned: resolved.pinned, stickyScope, strategyKey, disarmHedge: dispatchCtx.disarmHedge, state,
           });
           return 'done';
         } catch (err: any) {
@@ -798,7 +883,7 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
       // Remember this model for the rest of the auto-routed session. A pin used
       // to make this a no-op (the pin fixed the model); a group pin still has a
       // provider choice to remember, recorded under the group's own scope.
-      if (!resolved.pinned || stickyScope) setStickyModel(messages, route.modelDbId, sessionId, stickyScope ?? strategyKey);
+      if (!resolved.pinned || stickyScope) setStickyModel(sessionMessages, route.modelDbId, sessionId, stickyScope ?? strategyKey);
 
       const anthropicResponse: AnthropicMessageResponse = {
         id: newMessageId(),
@@ -809,6 +894,10 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
         stop_reason: mapStopReason(result.choices?.[0]?.finish_reason ?? null, respToolCalls.length > 0),
         stop_sequence: null,
         usage: { input_tokens: promptTokens, output_tokens: completionTokens },
+        // #1589/#2011: upstream classifier results unchanged; else, when the
+        // client asked for the review, the protocol's "unsupported" status.
+        // Never a verdict.
+        ...withSafeguardResults(safeguardResultsFor(anthropicCompat, result.safeguard_results)),
       };
 
       res.setHeader('X-Routed-Via', routedViaValue(route.platform, route.modelId));
@@ -850,6 +939,8 @@ interface StreamCtx {
   tools?: ChatToolDefinition[];
   pinnedModelId: string | null;
   sessionId?: string;
+  /** Pre-compression messages that key the sticky session (#1889). */
+  sessionMessages: ChatMessage[];
   pinned: boolean;
   // Sticky bucket for a group-pinned request; undefined for auto routing.
   stickyScope?: string;
@@ -883,6 +974,10 @@ async function streamCompletion(
   let outputChars = 0;
   let upstreamFinish: string | null = null;
   let upstreamUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+  // #1589: classifier results arriving on a stream chunk, carried to
+  // message_delta.delta verbatim (#2011 moved them into `delta`).
+  let upstreamSafeguardResults: unknown;
+  let sawSafeguardResults = false;
   const toolAcc = new Map<number, { id?: string; name: string; args: string; thought_signature?: string }>();
 
   // Inline-dialect hold window (#231): the first text is held until it either
@@ -980,6 +1075,11 @@ async function streamCompletion(
     for await (const chunk of gen) {
       if (ctx.clientGone()) break; // client hung up: stop pulling; reader.cancel() aborts upstream
       const anyChunk = chunk as Record<string, any>;
+      // #1589: a chunk may carry the upstream's classifier results top-level.
+      if (anyChunk.safeguard_results !== undefined) {
+        upstreamSafeguardResults = anyChunk.safeguard_results;
+        sawSafeguardResults = true;
+      }
 
       // In-band provider error frame (e.g. Groq emits {"error":…} inside a 200
       // stream). Before message_start: retryable → fail over invisibly. After:
@@ -1155,12 +1255,27 @@ async function streamCompletion(
     const deltaUsage = upstreamUsage?.prompt_tokens != null
       ? { input_tokens: inputTokens, output_tokens: outputTokens }
       : { output_tokens: outputTokens };
-    writeSse(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: deltaUsage });
+    writeSse(res, 'message_delta', {
+      type: 'message_delta',
+      // #1589/#2011: classifier results go INSIDE `delta`, where the
+      // Anthropic stream puts them and where Claude Code reads them
+      // (`message_delta.delta.safeguard_results`). Upstream results are
+      // unchanged; else the "unsupported" status when the client asked.
+      delta: {
+        stop_reason: stopReason,
+        stop_sequence: null,
+        ...withSafeguardResults(safeguardResultsFor(
+          options?.anthropicCompat as AnthropicCompatMetadata | undefined,
+          sawSafeguardResults ? upstreamSafeguardResults : undefined,
+        )),
+      },
+      usage: deltaUsage,
+    });
     writeSse(res, 'message_stop', { type: 'message_stop' });
     res.end();
 
     recordUpstreamSuccess(route, upstreamUsage?.total_tokens ?? inputTokens + outputTokens, ctx.state);
-    if (!ctx.pinned || ctx.stickyScope) setStickyModel(messages, route.modelDbId, ctx.sessionId, ctx.stickyScope ?? ctx.strategyKey);
+    if (!ctx.pinned || ctx.stickyScope) setStickyModel(ctx.sessionMessages, route.modelDbId, ctx.sessionId, ctx.stickyScope ?? ctx.strategyKey);
     logRequest(route.platform, route.modelId, route.keyId, 'success', inputTokens, outputTokens, Date.now() - ctx.start, null, null, ctx.pinnedModelId, null, 'http');
   } catch (err: any) {
     if (err instanceof StreamAlreadyStarted) throw err;

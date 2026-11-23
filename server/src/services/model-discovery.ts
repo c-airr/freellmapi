@@ -17,9 +17,19 @@ import type { ChatCompletionResponse, ChatMessage, ChatToolDefinition } from '@f
 // the body, cap the list, accept every envelope we've actually seen, and turn
 // any surprise into a clean error instead of a 500.
 
-/** Hard cap on the catalog body we will read. The largest real OpenAI-style
- *  catalog (OpenRouter, ~400 models with metadata) is well under 1 MB. */
-export const MAX_CATALOG_BYTES = 2 * 1024 * 1024;
+/** Hard cap on the catalog body we will read (#488, #1975). Raised default to
+ *  10 MB to accommodate extensive local model listings (Ollama, vLLM, local gateways),
+ *  configurable via CUSTOM_MODEL_CATALOG_MAX_MB. */
+export const DEFAULT_MAX_CATALOG_BYTES = 10 * 1024 * 1024;
+export const MAX_CATALOG_BYTES = DEFAULT_MAX_CATALOG_BYTES;
+
+export function getMaxCatalogBytes(): number {
+  const envVal = Number(process.env.CUSTOM_MODEL_CATALOG_MAX_MB);
+  if (Number.isFinite(envVal) && envVal > 0) {
+    return Math.round(envVal * 1024 * 1024);
+  }
+  return DEFAULT_MAX_CATALOG_BYTES;
+}
 
 /** Hard cap on how many ids we hand back — a checkbox list, not a data dump. */
 export const MAX_DISCOVERED_MODELS = 500;
@@ -410,7 +420,7 @@ export function parseModelCatalog(payload: unknown): DiscoveredModel[] {
  * the moment it runs past the cap, so a base_url pointed at something that
  * never stops can't take the process with it.
  */
-export async function readCappedBody(res: Response, maxBytes = MAX_CATALOG_BYTES): Promise<string> {
+export async function readCappedBody(res: Response, maxBytes = getMaxCatalogBytes()): Promise<string> {
   const tooLarge = () => new ModelDiscoveryError(
     502, `The endpoint's model list is larger than ${Math.round(maxBytes / 1024)} KB — refusing to read it.`,
   );
@@ -523,8 +533,17 @@ export async function discoverProviderModels(
 }
 
 /** Output cap on the probe request. Exported so the test can assert the floor
- *  rather than a magic number. See the call site for why it is not 1. */
-export const PROBE_MAX_TOKENS = 4;
+ *  rather than a magic number. See the call site for why it is not 1 — and
+ *  not 4 either: a reasoning model spends its first ~25 tokens thinking and
+ *  answers a 4-token ping with an empty reply (#903 follow-up). 64 matches the
+ *  background model probe (services/model-probe.ts). */
+export const PROBE_MAX_TOKENS = 64;
+
+/** Output cap on the reasoning capability probe. 16 used to be enough for
+ *  "63", but a reasoning model burns that budget on hidden reasoning before
+ *  any visible text, so "Probe now" reported a reasoning model as
+ *  "reasoning: no" (#903 follow-up). Still a rounding error in cost. */
+export const REASONING_PROBE_MAX_TOKENS = 256;
 
 /** Result of a capability probe (#874, phase 1). The `ping` latency/sample
  *  fields are unchanged from the original probe; `reasoning` and `toolCalls`
@@ -602,8 +621,9 @@ export async function probeEndpointModel(
       // Not 1: several relays enforce a floor above it and 400 the probe
       // outright ("max_tokens must be greater than 2" on b.ai's
       // deepseek-v4-flash, #903), so a probe that only wanted to measure
-      // latency reported the endpoint as broken. 4 clears the floors seen so
-      // far and still costs a rounding error.
+      // latency reported the endpoint as broken. 64 clears those floors and
+      // the budget a reasoning model spends before any visible text, and
+      // still costs a rounding error.
       { max_tokens: PROBE_MAX_TOKENS },
     );
   } catch (err) {
@@ -690,8 +710,9 @@ export async function probeModelCapabilities(
   modelId: string,
 ): Promise<ProbeCapabilities> {
   // Reasoning probe: a deterministic arithmetic puzzle. A reply containing the
-  // expected answer token is counted as "reasons". We allow a little headroom
-  // (max_tokens 16) so the model can emit "63" without being cut off mid-number.
+  // expected answer token is counted as "reasons". The budget
+  // (REASONING_PROBE_MAX_TOKENS) leaves room for a reasoning model's hidden
+  // thinking before it emits "63", so it is not cut off into a false "no".
   // `undefined` is the honest starting value: it means "we did not find out".
   // Only a completed probe may downgrade it to `false`.
   let reasoning: boolean | undefined;
@@ -700,7 +721,7 @@ export async function probeModelCapabilities(
       { role: 'user', content: REASONING_PROBE_PROMPT },
     ];
     const reasoningRes = await provider.chatCompletion(apiKey, reasoningMessages, modelId, {
-      max_tokens: 16,
+      max_tokens: REASONING_PROBE_MAX_TOKENS,
       temperature: 0,
     });
     const text = textOfCompletion(reasoningRes);

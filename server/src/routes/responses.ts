@@ -25,6 +25,7 @@ import {
   getRequestGroupId,
   getStickyModel,
   setStickyModel,
+  sessionIdentityMessages,
   streamReasoningText,
   completionReasoningText,
   traceRouteEvent,
@@ -699,7 +700,7 @@ export async function handleResponses(req: Request, res: Response): Promise<void
   if (!parsed.success) {
     res.status(400).json({
       error: {
-        message: `Invalid request: ${parsed.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join(', ')}`,
+        message: `Invalid request: ${parsed.error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join(', ')}`,
         type: 'invalid_request_error',
       },
     });
@@ -769,6 +770,8 @@ export async function handleResponses(req: Request, res: Response): Promise<void
     return Array.isArray(content)
       && content.some(block => block && typeof block === 'object' && 'cache_control' in block);
   });
+  // Session identity before compression can rewrite the first user turn (#1889).
+  const sessionMessages = sessionIdentityMessages(messages);
   const compressionResult = compressRequest(messages, {
     header: req.headers['x-freellm-compress'],
     tools,
@@ -856,7 +859,7 @@ export async function handleResponses(req: Request, res: Response): Promise<void
     // Strict over the tier's pool; an empty tier falls through to plain auto.
     groupChain = aliasTierChain;
     stickyStrategyKey = `tier:${aliasTierChain[0]!.model_db_id}`;
-    const sticky = getStickyModel(messages, sessionIdHeader, stickyStrategyKey);
+    const sticky = getStickyModel(sessionMessages, sessionIdHeader, stickyStrategyKey);
     preferredModel = (sticky != null && groupChain.some(r => r.model_db_id === sticky)) ? sticky : undefined;
   } else if (isAutoModel(routedModel)) {
     try {
@@ -872,7 +875,7 @@ export async function handleResponses(req: Request, res: Response): Promise<void
     }
     stickyStrategyKey = resolvedChain.strategyKey === 'auto' ? undefined : resolvedChain.strategyKey;
     preferredModel = resolveStickyPreference(
-      getStickyModel(messages, sessionIdHeader, stickyStrategyKey),
+      getStickyModel(sessionMessages, sessionIdHeader, stickyStrategyKey),
       resolvedChain.chain,
     );
   } else if (isFusionModel(routedModel)) {
@@ -897,7 +900,10 @@ export async function handleResponses(req: Request, res: Response): Promise<void
         });
         return;
       }
-      const sticky = getStickyModel(messages, sessionIdHeader, routedModel);
+      // Read and write the group's sticky member under the same key; the
+      // success path saves under stickyStrategyKey, as on /v1/chat/completions.
+      stickyStrategyKey = routedModel;
+      const sticky = getStickyModel(sessionMessages, sessionIdHeader, stickyStrategyKey);
       preferredModel = (sticky != null && groupChain.some(r => r.model_db_id === sticky)) ? sticky : undefined;
     } else {
       const enabled = db.prepare('SELECT id FROM models WHERE model_id = ? AND enabled = 1').get(routedModel) as { id: number } | undefined;
@@ -952,7 +958,9 @@ export async function handleResponses(req: Request, res: Response): Promise<void
   // Fallback-v2 hedging: the loop aborts this controller (via abortInFlight)
   // when the wall-clock retry budget expires mid-attempt, canceling the
   // in-flight upstream instead of waiting for a stalled attempt to time out.
-  const hedgeAbort = new AbortController();
+  // `let`: abortInFlight aborts only the in-flight attempt and replaces the
+  // controller, so a silent-window failover gets a fresh signal (#1960).
+  let hedgeAbort = new AbortController();
   res.on('close', () => {
     if (!res.writableEnded) {
       clientGone = true;
@@ -1211,7 +1219,8 @@ export async function handleResponses(req: Request, res: Response): Promise<void
     attemptLog,
     logIdentity: { surface: 'responses', requestId: requestGroupId, requestedModel: requestedModelLabel },
     clientGone: () => clientGone,
-    abortInFlight: () => hedgeAbort.abort(newHedgeAbortError()),
+    abortInFlight: () => { hedgeAbort.abort(newHedgeAbortError()); hedgeAbort = new AbortController(); },
+    streaming: stream === true,
     route: () => {
       // Task-type routing (#1127): same header/derivation as /chat/completions.
       const taskType = resolveTaskType(req, tools, messages);
@@ -1223,7 +1232,9 @@ export async function handleResponses(req: Request, res: Response): Promise<void
     },
     dispatch: async (route, attempt, ctx) => {
       const contextBudget = routeOutputBudget(route, estimatedInputTokens);
-      const routeOpts = contextBudget != null ? { ...dispatchOpts, contextBudget } : dispatchOpts;
+      // Signal composed per attempt: hedgeAbort is replaced after each abort.
+      const attemptOpts = { ...dispatchOpts, signal: AbortSignal.any([clientAbort.signal, hedgeAbort.signal]) };
+      const routeOpts = contextBudget != null ? { ...attemptOpts, contextBudget } : attemptOpts;
       traceRouteEvent('Responses', {
         event: attempt === 0 ? 'start' : 'next',
         requestId: requestGroupId,
@@ -1545,7 +1556,7 @@ export async function handleResponses(req: Request, res: Response): Promise<void
           res.end();
 
           recordUpstreamSuccess(route, upstreamUsage?.total_tokens ?? inputTokens + outputTokens, state);
-          setStickyModel(messages, route.modelDbId, sessionIdHeader, stickyStrategyKey);
+          setStickyModel(sessionMessages, route.modelDbId, sessionIdHeader, stickyStrategyKey);
           traceRouteEvent('Responses', {
             event: 'ok',
             requestId: requestGroupId,
@@ -1678,7 +1689,7 @@ export async function handleResponses(req: Request, res: Response): Promise<void
       // tokens against the rate-limit ledger; promptTokens/completionTokens
       // above already carry the chars/4 estimate.
       recordUpstreamSuccess(route, result.usage?.total_tokens ?? (promptTokens + completionTokens), state);
-      setStickyModel(messages, route.modelDbId, sessionIdHeader, stickyStrategyKey);
+      setStickyModel(sessionMessages, route.modelDbId, sessionIdHeader, stickyStrategyKey);
 
       res.setHeader('X-Routed-Via', routedViaValue(route.platform, route.modelId));
       setFallbackHeaders(res, attempt, attemptLog);

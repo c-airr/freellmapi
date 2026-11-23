@@ -18,7 +18,7 @@ import {
   DropdownMenuCheckboxItem,
 } from '@/components/ui/dropdown-menu'
 import { ChevronDown, CircleAlert, Copy, ExternalLink, FlaskConical, Info, KeyRound, Layers, ListFilter, ListPlus, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Sparkles, Trash2, Zap } from 'lucide-react'
-import type { ApiKey, ApiKeyModel } from '../../../../shared/types'
+import type { ApiKey, ApiKeyModel, Platform } from '../../../../shared/types'
 import { formatSqliteUtcToLocalTime } from '@/lib/utils'
 import { useI18n } from '@/i18n'
 import { toast } from '@/lib/toast'
@@ -34,6 +34,7 @@ import {
   statusLabelKey,
 } from './shared'
 import { balanceByKey } from './quota-balance'
+import { ApinexCheckinNotice } from './apinex-checkin-notice'
 import type { HealthData } from './shared'
 import { DiscoverModelsDialog } from './discover-models-dialog'
 import { AddEndpointKeyDialog } from './add-endpoint-key-dialog'
@@ -44,7 +45,7 @@ import { ModelScopeDialog } from './model-scope-dialog'
 import { TestModelsDialog } from './test-models-dialog'
 import { AddModelDialog } from './add-model-dialog'
 import { groupHandle } from '@/lib/endpoint-groups'
-import { SEARCH_PROVIDERS, isSearchPlatform } from '@/lib/search'
+import { invalidateSearchQueries, SEARCH_PROVIDERS, isSearchPlatform } from '@/lib/search'
 
 type StatusFilter = 'all' | 'healthy' | 'issues' | 'disabled'
 
@@ -77,7 +78,7 @@ const METRIC_LABEL_KEY = {
 // The Providers tab body: a filter toolbar over a list of collapsible provider
 // groups. Owns the keys/health/proxy queries and every per-key mutation so
 // KeysPage stays a thin shell. `onAddKey` opens the shared Add key dialog.
-export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
+export function ProviderList({ onAddKey }: { onAddKey: (platform?: Platform) => void }) {
   const { t, locale } = useI18n()
   const queryClient = useQueryClient()
 
@@ -135,7 +136,9 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
     mutationFn: (id: number) => apiFetch(`/api/keys/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['keys'] })
+      invalidateSearchQueries(queryClient)
       queryClient.invalidateQueries({ queryKey: ['health'] })
+      queryClient.invalidateQueries({ queryKey: ['fallback'] })
       // Deleting the last key of a platform flips it back to unconfigured in
       // the checklist strip.
       queryClient.invalidateQueries({ queryKey: ['keys-providers'] })
@@ -146,11 +149,23 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
     mutationFn: (model: ApiKeyModel) => apiFetch(customModelDeletePath(model), { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['keys'] })
+      invalidateSearchQueries(queryClient)
       queryClient.invalidateQueries({ queryKey: ['health'] })
       queryClient.invalidateQueries({ queryKey: ['fallback'] })
       queryClient.invalidateQueries({ queryKey: ['models'] })
       queryClient.invalidateQueries({ queryKey: ['embeddings'] })
       queryClient.invalidateQueries({ queryKey: ['media'] })
+    },
+  })
+
+  // Operator-controlled recovery after APINex daily website visit.
+  // Only APINex check-in cooldowns are cleared; actual quotas remain enforced.
+  const resumeCheckinKey = useMutation({
+    mutationFn: (keyId: number) => apiFetch<{ cleared: number }>(`/api/keys/${keyId}/cooldowns/checkin`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['keys'] })
+      invalidateSearchQueries(queryClient)
+      queryClient.invalidateQueries({ queryKey: ['health'] })
     },
   })
 
@@ -162,6 +177,7 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
       if (keys.find(k => k.id === keyId)?.autoHealthCheck === false) toast.info(t('keys.noAutoCheckHint'))
       queryClient.invalidateQueries({ queryKey: ['health'] })
       queryClient.invalidateQueries({ queryKey: ['keys'] })
+      invalidateSearchQueries(queryClient)
     },
   })
 
@@ -181,7 +197,7 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
         body: JSON.stringify({ keyId }),
       }),
     onSuccess: (data) => {
-      for (const key of ['keys', 'health', 'fallback']) {
+      for (const key of ['keys', 'health', 'fallback', 'search-engines', 'search-status']) {
         queryClient.invalidateQueries({ queryKey: [key] })
       }
       queryClient.invalidateQueries({ queryKey: ['fallback', 'routing'] })
@@ -209,6 +225,7 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['keys'] })
+      invalidateSearchQueries(queryClient)
       queryClient.invalidateQueries({ queryKey: ['health'] })
       queryClient.invalidateQueries({ queryKey: ['fallback'] })
     },
@@ -220,6 +237,7 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
       apiFetch(`/api/keys/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['keys'] })
+      invalidateSearchQueries(queryClient)
       queryClient.invalidateQueries({ queryKey: ['health'] })
       queryClient.invalidateQueries({ queryKey: ['fallback'] })
     },
@@ -250,6 +268,7 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
       }
     },
     onSuccess: ({ action, done, failed }) => {
+      invalidateSearchQueries(queryClient)
       for (const key of ['keys', 'health', 'fallback']) {
         queryClient.invalidateQueries({ queryKey: [key] })
       }
@@ -279,6 +298,7 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
       }
     },
     onSuccess: ({ done, failed }) => {
+      invalidateSearchQueries(queryClient)
       for (const key of ['keys', 'health', 'fallback', 'models', 'embeddings', 'media']) {
         queryClient.invalidateQueries({ queryKey: [key] })
       }
@@ -364,30 +384,32 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
 
   const q = search.trim().toLowerCase()
 
-  function matchStatus(group: (typeof grouped)[number]): boolean {
-    const enabled = group.keys.some(k => k.enabled)
-    const hasIssue = group.keys.some(k => isIssue(statusOf(k)))
+  // Same idea as the search below: narrow the keys inside a group, rather
+  // than keeping every key once the group matches (#1907). "all" is a no-op.
+  function keyMatchesStatus(key: ApiKey): boolean {
     switch (statusFilter) {
-      case 'healthy': return enabled && !hasIssue
-      case 'issues': return hasIssue
-      case 'disabled': return !enabled
+      case 'healthy': return key.enabled && !isIssue(statusOf(key))
+      case 'issues': return isIssue(statusOf(key))
+      case 'disabled': return !key.enabled
       default: return true
     }
   }
 
   // Search narrows either whole groups (label match) or the keys within them
-  // (label / masked-key / endpoint-URL match); the status filter then trims
-  // the result set. The baseUrl term is #1056's lesson applied here: a custom
-  // row renders "api.unorouter.com" on screen, so searching that host must
-  // find the row the same way the fallback table's search does.
+  // (label / masked-key / endpoint-URL match); the status filter then narrows
+  // those keys the same way. The baseUrl term is #1056's lesson applied here:
+  // a custom row renders "api.unorouter.com" on screen, so searching that host
+  // must find the row the same way the fallback table's search does.
   const visibleGroups = grouped
     .map(group => {
-      if (!q) return group
-      if (group.label.toLowerCase().includes(q)) return group
-      const matchingKeys = group.keys.filter(k => keyMatchesQuery(k, q))
-      return { ...group, keys: matchingKeys }
+      let keys = group.keys
+      if (q && !group.label.toLowerCase().includes(q)) {
+        keys = keys.filter(k => keyMatchesQuery(k, q))
+      }
+      if (statusFilter !== 'all') keys = keys.filter(keyMatchesStatus)
+      return keys === group.keys ? group : { ...group, keys }
     })
-    .filter(group => group.keys.length > 0 && matchStatus(group))
+    .filter(group => group.keys.length > 0)
 
   function isGroupExpanded(group: (typeof grouped)[number]): boolean {
     if (q) return true // an active search auto-expands every matching group
@@ -413,7 +435,7 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
         icon={KeyRound}
         title={t('keys.noProviderKeys')}
         action={
-          <Button size="sm" onClick={onAddKey}>
+          <Button size="sm" onClick={() => onAddKey()}>
             <Plus className="size-3.5" />
             {t('keys.addKey')}
           </Button>
@@ -527,6 +549,23 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
                         <MoreHorizontal />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-52">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            if (group.platform === 'custom') {
+                              const baseUrls = [...new Set(group.keys.map(k => k.baseUrl).filter((u): u is string => Boolean(u)))]
+                              if (baseUrls.length === 1) {
+                                setAddKeyBaseUrl(baseUrls[0])
+                                return
+                              }
+                              onAddKey()
+                              return
+                            }
+                            onAddKey(group.platform as Platform)
+                          }}
+                        >
+                          {t('keys.addAnotherKey')}
+                          <KeyRound className="ml-auto size-3.5" />
+                        </DropdownMenuItem>
                         {/* Test every model this provider serves, one real ping each
                             (custom endpoints test per key from the row instead). */}
                         {group.platform !== 'custom' && !group.search && (
@@ -635,6 +674,7 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
                       const hasCustomModels = customModels.length > 0
                       const isExpanded = expandedKeyIds.has(k.id)
                       const isChecking = checkKey.isPending && checkKey.variables === k.id
+                      const checkinRequired = k.platform === 'apinex' && k.cooldowns?.some(c => c.source === 'checkin')
                       return (
                         <div key={k.id} className="bg-card">
                           <div className="group/krow flex items-center gap-3 px-4 py-3 hover:bg-muted/40 transition-colors">
@@ -901,6 +941,13 @@ export function ProviderList({ onAddKey }: { onAddKey: () => void }) {
                                 {k.modelsAvailable === 0 && <> {t('keys.noModelsYetHint')}</>}
                               </span>
                             </div>
+                          )}
+                          {checkinRequired && (
+                            <ApinexCheckinNotice
+                              disabled={resumeCheckinKey.isPending}
+                              resuming={resumeCheckinKey.isPending && resumeCheckinKey.variables === k.id}
+                              onResume={() => resumeCheckinKey.mutate(k.id)}
+                            />
                           )}
                           {lastHealthError && (
                             <div className="flex items-start gap-2 px-4 pb-3 pl-8 text-xs text-destructive" role="status">

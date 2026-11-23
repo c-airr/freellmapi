@@ -23,6 +23,9 @@ export interface FallbackEntry {
   // Parsed token count from the server (single source of truth — see
   // server/src/lib/budget.ts). Optional only because the dev mock omits it.
   monthlyTokenBudgetTokens?: number
+  // True when the server derived the budget from tpdLimit × 30 because the
+  // label carries no token figure (#2030); show the number, not the label.
+  monthlyTokenBudgetDerived?: boolean
   // Max context length in tokens (catalog value), or null when unrecorded.
   // Drives the catalog context-window filter on the Models page.
   contextWindow?: number | null
@@ -134,7 +137,7 @@ export interface TokenUsageData {
   totalUsed: number
   /** Served smartest-first (intelligenceRank 1 = smartest); the bar and its
    *  legend keep that order. */
-  models: { displayName: string; platform: string; modelId?: string; intelligenceRank?: number; budget: number; used?: number }[]
+  models: { modelDbId?: number; displayName: string; platform: string; modelId?: string; intelligenceRank?: number; budget: number; used?: number }[]
 }
 
 // Custom endpoints all share the generic 'custom' platform id, so show the
@@ -434,7 +437,18 @@ export const platformColors: Record<string, string> = {
   moondream:   '#6d5dfc',
   jamai:       '#24a19c',
   nabh:        '#0ea5e9',
+  zro:         '#4f46e5',
   novai:       '#8b5cf6',
+  varosity:    '#a855f7',
+  speechflow:  '#2563eb',
+  meldport:    '#256381',
+  rime:        '#e96847',
+  typecast:    '#6b46c1',
+  cartesia:    '#1c6b4a',
+  silvr:       '#64748b',
+  freetts:     '#6366f1',
+  freeinference: '#a51c30',
+  freemodel:   '#16a34a',
   electronhub: '#6366f1',
   experiential: '#14b8a6',
   router9:      '#8b5cf6',
@@ -474,6 +488,9 @@ export const platformColors: Record<string, string> = {
   unorouter:   '#ec4899',
   xkiro:       '#a855f7',
   anyapi:      '#0891b2',
+  powertokens: '#7c3aed',
+  puter:       '#496bcb',
+  cheapllm:    '#c8102e',
   modelscope:  '#624aff',
   aihorde:     '#dc2626',
   qianfan:     '#2932e1',
@@ -489,6 +506,7 @@ export const platformColors: Record<string, string> = {
   serpsearch:  '#2563eb',
   keenable:    '#7c3aed',
   brave:       '#fb542b',
+  outcrawl:    '#0d9488',
   beatapi:     '#8b5cf6',
   apinex:      '#06b6d4',
   onomeo:      '#f97316',

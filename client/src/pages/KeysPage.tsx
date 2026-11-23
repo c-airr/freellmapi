@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
+import { invalidateSearchQueries } from '@/lib/search'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { PageHeader } from '@/components/page-header'
@@ -17,6 +18,7 @@ import { BackupsSection } from '@/components/keys/backups-section'
 import { AnthropicSection } from '@/components/keys/anthropic-section'
 import { ProviderList } from '@/components/keys/provider-list'
 import { ProviderChecklistSection } from '@/components/keys/provider-checklist-section'
+import { KeylessNotice } from '@/components/keys/keyless-notice'
 import { AddKeyDialog } from '@/components/keys/add-key-dialog'
 import { ExportKeysDialog } from '@/components/keys/export-keys-dialog'
 import { AgentCompatibilitySection } from '@/components/keys/agent-compatibility-section'
@@ -72,6 +74,7 @@ export default function KeysPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['health'] })
       queryClient.invalidateQueries({ queryKey: ['keys'] })
+      invalidateSearchQueries(queryClient)
     },
   })
 
@@ -129,8 +132,11 @@ export default function KeysPage() {
 
         {tab === 'providers' && (
           <>
-            <ProviderChecklistSection onAddKey={platform => openAddKey(platform as Platform)} />
-            <ProviderList onAddKey={() => openAddKey()} />
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <ProviderChecklistSection onAddKey={platform => openAddKey(platform as Platform)} />
+              <KeylessNotice />
+            </div>
+            <ProviderList onAddKey={platform => openAddKey(platform ?? '')} />
           </>
         )}
       </div>

@@ -104,8 +104,27 @@ export type Platform =
   | 'jamai'
   // One shared renewable monthly credit allowance; signed catalog only.
   | 'nabh'
+  // Zro by MoonMath.ai: selected chat routes share daily free usage. The
+  // allowance is not monthly cash credit; model rows are hosted-catalog only.
+  | 'zro'
   // Daily-free video route; signed catalog only.
   | 'novai'
+  | 'varosity'
+  // Native TTS and transcription; one shared renewable monthly credit grant.
+  | 'speechflow'
+  | 'meldport'
+  | 'rime'
+  // Native speech: shared monthly credits, non-commercial Free output.
+  | 'typecast'
+  | 'cartesia'
+  // OpenAI-compatible gateway; one shared daily free allowance.
+  | 'silvr'
+  // Local personal BYOK TTS; shared monthly characters, watermarked Free audio.
+  | 'freetts'
+  // Research API; chat and embeddings share a daily quota. Requests are logged.
+  | 'freeinference'
+  // Personal BYOK client; shared monthly account allowance, Telegram verification.
+  | 'freemodel'
   // Hosted gateways; model rows are delivered by the signed catalog only.
   // ElectronHub renews weekly credits; Experiential renews monthly credits.
   | 'electronhub'
@@ -134,6 +153,16 @@ export type Platform =
   // published. Catalog rows live in the hosted catalog (premium now, free after
   // 30 days).
   | 'anyapi'
+  // PowerTokens — OpenAI-compatible gateway (api.powertokens.ai). Free model
+  // glm-4.7-flash ($0 / 1M in+out, 0 Credits). RPM/RPD unpublished. Hosted
+  // catalog only (no migration seed), same as the anyapi/bai gateways.
+  | 'powertokens'
+  // cheapllm.shop - OpenAI-compatible host for one model, DeepSeek V4.1 Flash
+  // 1017. Free with no rate limit during its beta; afterwards a permanent free
+  // tier of at least 5,000 input + 1,000 output tokens per hour per account.
+  // Email sign-up, no card. Hosted catalog only (no migration seed).
+  | 'cheapllm'
+  | 'puter'
   // AMD Radeon Cloud TokenFactory — OpenAI-compatible shared inference. Its
   // rotating public-model roster is free without consuming instance credits,
   // with recurring account-level allowance and request/concurrency controls.
@@ -157,6 +186,7 @@ export type Platform =
   | 'halx'
   | 'aisense'
   | 'brave'
+  | 'outcrawl'
   | 'cloudflare'
   | 'zhipu'
   | 'ollama'
@@ -186,9 +216,8 @@ export type Platform =
   // BazaarLink — OpenAI-compatible aggregator. Free 'auto:free' route picks an
   // available zero-cost model. Key from bazaarlink.ai (no card).
   | 'bazaarlink'
-  // AINative Studio — OpenAI-compatible aggregator. Advertises a recurring
-  // ~10M tokens/month free allocation (no card); quota unverified. Key from
-  // ainative.studio.
+  // AINative Studio — OpenAI-compatible aggregator. Paid plans only (#2019);
+  // no free allocation to advertise. Key from ainative.studio.
   | 'ainative'
   // Aion Labs — OpenAI-compatible aggregator with a no-card free API key.
   // Catalog rows live in the Oracle catalog (premium now, free after 30 days).
@@ -284,7 +313,7 @@ export type Platform =
  *  web_search tools), never chat. Search engine rows arrive through the
  *  catalog's `searchEngines` registry. The server keeps its own runtime copy in
  *  server/src/lib/search-platforms.ts (shared is type-only on the server). */
-export const SEARCH_PLATFORMS = ['tavily', 'exa', 'firecrawl', 'linkup', 'parallel', 'serpsearch', 'keenable', 'brave'] as const;
+export const SEARCH_PLATFORMS = ['tavily', 'exa', 'firecrawl', 'linkup', 'parallel', 'serpsearch', 'keenable', 'brave', 'outcrawl'] as const;
 export type SearchPlatform = (typeof SEARCH_PLATFORMS)[number];
 
 export function isSearchPlatform(platform: string): platform is SearchPlatform {
@@ -347,7 +376,7 @@ export type KeyStatus = 'healthy' | 'rate_limited' | 'invalid' | 'error' | 'unkn
 
 export interface ApiKeyModel {
   id: number;
-  kind: 'chat' | 'embedding' | 'image' | 'audio' | 'transcription';
+  kind: 'chat' | 'embedding' | 'image' | 'audio' | 'transcription' | 'search' | 'decision';
   modelId: string;
   displayName: string;
   family?: string | null;
@@ -357,9 +386,15 @@ export interface ApiKeyModel {
  *  and enabled yet still skipped by the router because of these. */
 export interface ApiKeyCooldown {
   modelId: string;
+  /** Why this route is benched; 'checkin' means APINex daily website visit required. */
+  source?: 'heuristic' | 'authoritative' | 'credit' | 'tier' | 'checkin';
   expiresAtMs: number;
   remainingMs: number;
 }
+
+/** What a key's healthy verdict rests on (#1516, display-only). See
+ *  `ApiKey.verificationBasis`. */
+export type KeyVerificationBasis = 'models_only' | 'inference_verified';
 
 export interface ApiKey {
   id: number;
@@ -387,6 +422,12 @@ export interface ApiKey {
    *  live request (#1493). Unlike lastCheckedAt, a transport error does not
    *  refresh it, so "checked recently but never worked" is visible. */
   lastHealthyAt?: string | null;
+  /** What the key's healthy verdict actually rests on (#1516, display-only):
+   *  'models_only' when it comes from the /models catalog probe — a 200 there
+   *  says nothing about real inference — 'inference_verified' once the key
+   *  served a live request. Null = never verified, or cleared by an invalid
+   *  verdict. Changes no routing. */
+  verificationBasis?: KeyVerificationBasis | null;
   lastHealthError: string | null;
   /** Model ids this key is limited to; null = serves every model of its
    *  platform (#657). */
@@ -573,6 +614,9 @@ export interface ChatCompletionResponse {
     platform: Platform;
     model: string;
   };
+  // Anthropic auto-mode classifier results, when the upstream supplied them
+  // (#1589). Never synthesized here; absent when the upstream sends none.
+  safeguard_results?: unknown;
 }
 
 export interface ChatCompletionChunk {
@@ -591,6 +635,10 @@ export interface ChatCompletionChunk {
     finish_reason: string | null;
   }[];
   usage?: TokenUsage;
+  // Anthropic auto-mode classifier results carried on a stream chunk, when
+  // the upstream supplied them (#1589). Same rule as the non-streaming
+  // response: passed through verbatim, never synthesized.
+  safeguard_results?: unknown;
 }
 
 // ---- Analytics Types ----

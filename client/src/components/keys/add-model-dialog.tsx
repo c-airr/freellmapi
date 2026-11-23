@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { X, Sparkles, Loader2 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
+import { invalidateSearchQueries } from '@/lib/search'
 import { Dialog, DialogClose, DialogPopup, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -44,6 +45,7 @@ interface CreateModelPayload {
   rpdLimit?: number
   tpmLimit?: number
   tpdLimit?: number
+  monthlyTokenBudget?: string
 }
 
 function AddModelForm({ open, onOpenChange, initialPlatform, initialKeyId }: AddModelDialogProps) {
@@ -62,6 +64,7 @@ function AddModelForm({ open, onOpenChange, initialPlatform, initialKeyId }: Add
   const [rpdLimit, setRpdLimit] = useState('')
   const [tpmLimit, setTpmLimit] = useState('')
   const [tpdLimit, setTpdLimit] = useState('')
+  const [monthlyTokenBudget, setMonthlyTokenBudget] = useState('')
   const [supportsVision, setSupportsVision] = useState(false)
   const [supportsTools, setSupportsTools] = useState(true)
   const [submitted, setSubmitted] = useState(false)
@@ -78,6 +81,7 @@ function AddModelForm({ open, onOpenChange, initialPlatform, initialKeyId }: Add
       queryClient.invalidateQueries({ queryKey: ['models'] })
       queryClient.invalidateQueries({ queryKey: ['fallback'] })
       queryClient.invalidateQueries({ queryKey: ['keys'] })
+      invalidateSearchQueries(queryClient)
       toast.success(t('keys.modelAddedSuccess'))
       onOpenChange(false)
     },
@@ -122,6 +126,9 @@ function AddModelForm({ open, onOpenChange, initialPlatform, initialKeyId }: Add
     if (tpdLimit) {
       const parsed = parseInt(tpdLimit, 10)
       if (!isNaN(parsed) && parsed > 0) payload.tpdLimit = parsed
+    }
+    if (monthlyTokenBudget.trim()) {
+      payload.monthlyTokenBudget = monthlyTokenBudget.trim()
     }
 
     addModelMutation.mutate(payload)
@@ -209,17 +216,28 @@ function AddModelForm({ open, onOpenChange, initialPlatform, initialKeyId }: Add
             />
           </div>
 
-          {/* Context Window */}
-          <div className="space-y-1.5">
-            <Label htmlFor="provider-context-window">{t('keys.modelContextWindow')}</Label>
-            <Input
-              id="provider-context-window"
-              type="number"
-              min="1"
-              value={contextWindow}
-              onChange={(e) => setContextWindow(e.target.value)}
-              placeholder="e.g. 128000"
-            />
+          {/* Context Window & Monthly Token Budget */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="provider-context-window">{t('keys.modelContextWindow')}</Label>
+              <Input
+                id="provider-context-window"
+                type="number"
+                min="1"
+                value={contextWindow}
+                onChange={(e) => setContextWindow(e.target.value)}
+                placeholder="e.g. 128000"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="provider-monthly-token-budget">{t('models.monthlyTokenBudget')}</Label>
+              <Input
+                id="provider-monthly-token-budget"
+                value={monthlyTokenBudget}
+                onChange={(e) => setMonthlyTokenBudget(e.target.value)}
+                placeholder="~30M"
+              />
+            </div>
           </div>
 
           {/* Rate Limits Grid */}

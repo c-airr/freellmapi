@@ -33,7 +33,8 @@ import { ConversationSidebar } from '@/components/playground/conversation-sideba
 import { SettingsRail } from '@/components/playground/settings-rail'
 import { LiquidComposer } from '@/components/playground/liquid-composer'
 import { SearchSources } from '@/components/playground/search-sources'
-import { engineChain, searchContextMessage, searchProviderName, type SearchEngine, type SearchResult } from '@/lib/search'
+import { searchContextMessage, searchProviderName, searchReadinessHint, type SearchResult } from '@/lib/search'
+import { useSearchReadiness } from '@/hooks/use-search-readiness'
 import { ModelMakerIcon } from '@/components/model-maker-icon'
 import { composerHasContent } from '@/lib/composer-geometry'
 import {
@@ -234,6 +235,14 @@ function initialRailOpen(key: string): boolean {
   return localStorage.getItem(key) !== 'false'
 }
 
+function systemDictationHintKey(models: TranscriptionModelRow[] | undefined) {
+  const desktop = window as Window & { __FREEAPI_DESKTOP__?: boolean; __FREEAPI_PLATFORM__?: string }
+  // Wait for the catalog. A keyed provider with disabled models still uses the model setup flow.
+  if (!desktop.__FREEAPI_DESKTOP__ || !models || models.some(m => m.modality === 'transcription' && m.keyCount > 0)) return
+  if (desktop.__FREEAPI_PLATFORM__ === 'darwin') return 'playground.dictationMacShortcut'
+  if (desktop.__FREEAPI_PLATFORM__ === 'win32') return 'playground.dictationWindowsShortcut'
+}
+
 export default function PlaygroundPage() {
   const { t } = useI18n()
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -327,17 +336,14 @@ export default function PlaygroundPage() {
   })
   const mediaModels = mediaData?.models ?? []
 
-  // Engines that can actually run a search: enabled, with a key behind them.
-  // An older server without the endpoint just leaves the switch unavailable.
-  const { data: searchEngines = [] } = useQuery<SearchEngine[]>({
-    queryKey: ['search-engines'],
-    queryFn: () => apiFetch('/api/search/engines'),
-    retry: false,
-  })
-  const usableEngines = engineChain(searchEngines).filter(e => e.keyCount > 0)
-  const webSearchAvailable = usableEngines.length > 0
+  const searchReadiness = useSearchReadiness()
+  const usableEngines = searchReadiness.readyEngines
+  const webSearchAvailable = searchReadiness.available
+  const webSearchUnavailableHint = searchReadinessHint(searchReadiness.data, searchReadiness.failed, searchReadiness.loading, t)
   const webSearchOn = webSearch && webSearchAvailable
   const transcriptionAvailable = hasTranscription(mediaModels)
+  const shortcutHintKey = systemDictationHintKey(mediaData?.models)
+  const dictationUnavailableHint = transcriptionAvailable ? undefined : t(shortcutHintKey ?? 'playground.dictationUnavailable')
   const [dictationChoice, setDictationChoice] = useState<string>(
     () => localStorage.getItem(DICTATION_MODEL_STORAGE_KEY) ?? DICTATION_AUTO,
   )
@@ -1288,7 +1294,10 @@ export default function PlaygroundPage() {
             onAttach={() => fileInputRef.current?.click()}
             labels={{ add: t('playground.addMenu'), attach: t('playground.attach'), send: t('playground.send'), sending: t('playground.sending') }}
             dictation={{
-              available: transcriptionAvailable,
+              onUnavailable: dictationUnavailableHint ? () => {
+                if (shortcutHintKey) inputRef.current?.focus()
+                toast.info(dictationUnavailableHint)
+              } : undefined,
               model: dictationModel,
               apiKey: keyData?.apiKey,
               onText: text => {
@@ -1300,7 +1309,7 @@ export default function PlaygroundPage() {
               enabled: webSearchOn,
               available: webSearchAvailable,
               label: t('search.playgroundToggle'),
-              unavailableHint: t('search.playgroundNoKeys'),
+              unavailableHint: webSearchUnavailableHint,
               onToggle: updateWebSearch,
             }}
           />
@@ -1332,7 +1341,7 @@ export default function PlaygroundPage() {
         dictationValue={dictationModel}
         dictationOptions={dictationOptions}
         onSelectDictation={pickDictationModel}
-        noTranscription={!transcriptionAvailable}
+        dictationUnavailableHint={dictationUnavailableHint}
         systemPrompt={systemPrompt}
         onSystemPromptChange={updateSystemPrompt}
         sampling={sampling}
@@ -1340,6 +1349,7 @@ export default function PlaygroundPage() {
         webSearch={webSearch}
         onWebSearchChange={updateWebSearch}
         webSearchAvailable={webSearchAvailable}
+        webSearchUnavailableHint={webSearchUnavailableHint}
         webSearchChain={usableEngines.map(e => e.displayName).join(' → ')}
       />
       )}
