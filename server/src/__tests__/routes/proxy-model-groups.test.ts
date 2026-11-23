@@ -333,14 +333,14 @@ describe('Model unification (group the same model across providers)', () => {
 
   it('restores remembered reasoning after compression ages the session opener', async () => {
     setCompressionConfig({ mode: 'aggressive' });
-    const model = addModel('opencode', 'compression-reasoning-model', 'Compression Reasoning Model', 1);
+    const model = addModel('openrouter', 'compression-reasoning-model', 'Compression Reasoning Model', 1);
     addedModels.push(model);
-    addKey('opencode');
+    addKey('openrouter');
     const originalFetch = global.fetch;
     let turn = 0;
     let nextBody: any;
     vi.spyOn(global, 'fetch').mockImplementation(async (url: any, init?: any) => {
-      if (String(url).includes('opencode.ai')) {
+      if (String(url).includes('openrouter.ai')) {
         turn += 1;
         if (turn === 2) nextBody = JSON.parse(init.body);
         return new Response(JSON.stringify({
@@ -353,7 +353,7 @@ describe('Model unification (group the same model across providers)', () => {
     });
     const first = `I need help preserving a reasoning trace.\n${'Background about the work. '.repeat(80)}`;
     const start = await request(app, 'POST', '/v1/chat/completions', {
-      model: 'opencode:compression-reasoning-model', messages: [{ role: 'user', content: first }],
+      model: 'openrouter:compression-reasoning-model', messages: [{ role: 'user', content: first }],
     }, authHeaders());
     expect(start.status).toBe(200);
 
@@ -362,7 +362,7 @@ describe('Model unification (group the same model across providers)', () => {
       conversation.push({ role: 'assistant', content: 'answer' }, { role: 'user', content: 'continue' });
     }
     const next = await request(app, 'POST', '/v1/chat/completions', {
-      model: 'opencode:compression-reasoning-model', messages: conversation,
+      model: 'openrouter:compression-reasoning-model', messages: conversation,
     }, authHeaders());
     expect(next.status).toBe(200);
     expect(nextBody.messages[0].content).toContain('[compressed older turn]');

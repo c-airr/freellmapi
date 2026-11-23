@@ -74,7 +74,7 @@ describe('custom model endpoint identity migration', () => {
       ).all(seededProfileId, seededModelId);
       const fallbackBefore = chainOf();
       const profileBefore = profileOf();
-      const countModels = () => (db.prepare("SELECT COUNT(*) AS n FROM models WHERE platform != 'github'").get() as { n: number }).n;
+      const countModels = () => (db.prepare("SELECT COUNT(*) AS n FROM models WHERE platform NOT IN ('github', 'opencode')").get() as { n: number }).n;
       const totalBefore = countModels();
 
       await runMigrations(db, 'up');
@@ -89,7 +89,7 @@ describe('custom model endpoint identity migration', () => {
       expect(profileOf()).toEqual(profileBefore);
       expect(db.pragma('foreign_key_check')).toEqual([]);
       // Nothing was dropped on the way through: later migrations only add rows,
-      // apart from the retired GitHub provider's (#1557).
+      // apart from the retired GitHub and OpenCode providers.
       expect(countModels()).toBeGreaterThanOrEqual(totalBefore);
     } finally {
       db.close();
